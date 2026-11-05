@@ -69,6 +69,7 @@ startup.log
 *.whl
 
 # Machine-local state and credentials
+.local/
 .env
 .env.*
 !.env.example

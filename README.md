@@ -56,6 +56,29 @@ Managed downloads and local application data are stored under `%LOCALAPPDATA%\AZ
 
 ## Build and contribute
 
+For a configured development checkout, double-click **`BUILD_SETUP.cmd`** after
+editing the source. Change **`VERSION`** when preparing a new release. The script
+runs the tests, rebuilds the executable from current source, collects component
+licenses and matching sources, and creates
+`release/Voxriva-<VERSION>-Windows-x64-Setup.exe` plus its SHA-256 file. It keeps
+the terminal open to show success or an actionable failure; build logs are in
+`.local/build-logs`. It never reuses an old executable as the new application.
+
+Machine-specific tool paths may be set in ignored `.local/build-settings.json`
+using `Python`, `QtPath`, `SourceCache` and `Makensis` keys. Relative paths resolve
+from the repository root. The default build uses existing tools and verified
+source caches; it does not install packages or download models. A fresh clone
+needs the development dependencies and slim LGPL FFmpeg described below.
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_setup.ps1 -CheckOnly`
+checks those prerequisites without building. This execution policy applies only
+to that PowerShell process.
+
+To build entirely on GitHub, open **Actions → Build Windows model-free app → Run
+workflow**. Download the Setup artifact when it succeeds. The workflow reads the
+same `VERSION` file and does not publish a release automatically. Keep models,
+tool caches, installers and private data outside Git; `.local/`, `build/`,
+`dist/` and `release/` are ignored.
+
 Install `requirements-dev.txt`, prepare the slim audio decoder and its matching source/notices, then run `build_windows.ps1` from the repository root. The notice-preparation step fetches approximately 85 MB of pinned library source archives and a 2.2 MB official Intel runtime package if not already cached; these are not ASR model weights. To reuse existing archives, pass `-SourceCache C:\path\to\Licenses\Sources` or set `AZB_SOURCE_CACHE`. The helper `scripts/prepare_notices.py --offline --source-cache ...` can verify/collect them without network. The build keeps the application `.py` source alongside the executable in `app`; do not delete it. The GitHub Actions workflow builds an artifact; it does not publish a GitHub release. No model should be downloaded or bundled by a build. Keep the complete third-party license/source directory when sharing a binary release.
 
 Application source is [MIT](LICENSE), copyright 2026 Fardin Milani. Model and library licenses remain separate. The AZB maintainer's MIT confirmation was relayed by Fardin Milani; this repository does not claim that the upstream Hugging Face model card currently contains an MIT notice. Preserve the Kartal Ol attribution and [all third-party notices](THIRD_PARTY_NOTICES.md).

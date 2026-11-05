@@ -1,4 +1,4 @@
-param([string]$Python = 'python', [string]$SourceCache = $env:AZB_SOURCE_CACHE)
+param([string]$Python = 'python', [string]$SourceCache = $env:AZB_SOURCE_CACHE, [switch]$OfflineSources)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 if (-not (Test-Path -LiteralPath 'vendor/ffmpeg.exe')) {
@@ -12,6 +12,7 @@ Get-ChildItem -LiteralPath app -Filter '*.py' -File | Copy-Item -Destination (Jo
 Copy-Item -LiteralPath README.md, README_FA.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination $taskRelease -Force
 $taskNoticeArgs = @('scripts/prepare_notices.py', '--release', $taskRelease)
 if ($SourceCache) { $taskNoticeArgs += @('--source-cache', $SourceCache) }
+if ($OfflineSources) { $taskNoticeArgs += '--offline' }
 if ($env:AZB_QT_PATH) { $taskNoticeArgs += @('--package-path', $env:AZB_QT_PATH) }
 & $Python @taskNoticeArgs
 if ($LASTEXITCODE -ne 0) { throw 'Matching source/notice preparation failed; do not redistribute this incomplete build.' }

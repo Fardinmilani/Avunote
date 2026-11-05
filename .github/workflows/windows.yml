@@ -14,6 +14,8 @@ on:
       - 'requirements*.txt'
       - 'studio.spec'
       - 'build_windows.ps1'
+      - 'BUILD_SETUP.cmd'
+      - 'VERSION'
       - 'FEATURES_2_1.md'
       - 'README*'
       - 'LICENSE'
@@ -116,10 +118,12 @@ jobs:
           if-no-files-found: error
       - name: Build optional-shortcut Setup installer
         shell: pwsh
-        run: ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -OutputPath release/Voxriva-2.1.1-Windows-x64-Setup.exe
+        run: |
+          $taskVersion = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -Version $taskVersion -OutputPath "release/Voxriva-$taskVersion-Windows-x64-Setup.exe"
       - uses: actions/upload-artifact@v4
         with:
           name: Voxriva-Windows-x64-Setup
-          path: release/Voxriva-2.1.1-Windows-x64-Setup.exe*
+          path: release/Voxriva-*-Windows-x64-Setup.exe*
           retention-days: 7
           if-no-files-found: error
