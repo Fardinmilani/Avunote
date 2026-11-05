@@ -1,0 +1,12 @@
+# Install CPU-only torch separately first; see README. Do not install CUDA wheels.
+PySide6-Essentials==6.12.0
+transformers==4.57.1
+tokenizers>=0.22.0,<0.23
+huggingface-hub>=0.34.0,<1
+safetensors>=0.6.0,<1
+ctranslate2==4.8.5
+numpy>=2.1.0,<3
+psutil>=7.1.0,<8
+requests>=2.32.5,<3
+sounddevice>=0.5.2,<0.6
+imageio-ffmpeg==0.6.0

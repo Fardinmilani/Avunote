@@ -1,0 +1,125 @@
+name: Build Windows model-free app
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'installer/**'
+      - 'assets/**'
+      - 'licenses/**'
+      - 'vendor/**'
+      - 'requirements*.txt'
+      - 'studio.spec'
+      - 'build_windows.ps1'
+      - 'FEATURES_2_1.md'
+      - 'README*'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      AZB_SOURCE_CACHE: ${{ github.workspace }}\source-cache
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+          cache: pip
+      - name: Install CPU runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-dev.txt
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            curl
+            tar
+            xz
+            mingw-w64-x86_64-gcc
+      - name: Build slim LGPL FFmpeg from matching source
+        shell: msys2 {0}
+        run: |
+          set -eu
+          mkdir -p source-cache build-support vendor/FFmpeg-source
+          curl --fail --location --retry 3 https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz -o source-cache/ffmpeg-7.1.tar.xz
+          echo '40973d44970dbc83ef302b0609f2e74982be2d85916dd2ee7472d30678a7abe6  source-cache/ffmpeg-7.1.tar.xz' | sha256sum --check
+          tar -xf source-cache/ffmpeg-7.1.tar.xz -C build-support
+          cd build-support/ffmpeg-7.1
+          ./configure --disable-everything --disable-autodetect --disable-doc --disable-network \
+            --disable-gpl --disable-version3 --enable-ffmpeg --disable-ffplay --disable-ffprobe \
+            --disable-avdevice --disable-postproc --disable-x86asm --disable-asm \
+            --enable-static --disable-shared --enable-w32threads --target-os=mingw32 --arch=x86_64 \
+            --cc=gcc --ld=gcc --ar=ar --ranlib=ranlib --extra-ldflags=-static \
+            --extra-cflags='-march=x86-64 -mtune=generic' \
+            --enable-demuxer=wav,mp3,mov,ogg,flac \
+            --enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be,pcm_u8,pcm_alaw,pcm_mulaw,mp3,mp3float,aac,aac_fixed,alac,vorbis,opus,flac \
+            --enable-parser=aac,mpegaudio,opus,vorbis,flac \
+            --enable-encoder=pcm_s16le --enable-muxer=wav --enable-protocol=file \
+            --enable-filter=aresample,aformat,anull
+          make -j2 V=1 ffmpeg.exe
+          cp ffmpeg.exe ../../vendor/ffmpeg.exe
+          cp config.h config_components.h ffbuild/config.mak ../../vendor/FFmpeg-source/
+          gcc --version > ../../vendor/FFmpeg-source/compiler-version.txt
+          mkdir -p ../../vendor/FFmpeg-source/compiler-runtime-licenses
+          if [ -d /mingw64/share/licenses ]; then
+            cp -R /mingw64/share/licenses/. ../../vendor/FFmpeg-source/compiler-runtime-licenses/
+          fi
+          ../../vendor/ffmpeg.exe -L > ../../vendor/FFmpeg-source/FFmpeg-NOTICE.txt 2>&1
+      - name: Run local tests without model downloads
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath tests) {
+            python -m pytest tests -q
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build model-free Windows folder and matching source notices
+        shell: pwsh
+        run: ./build_windows.ps1 -Python python -SourceCache $env:AZB_SOURCE_CACHE
+      - name: Check release excludes personal data and weights
+        shell: pwsh
+        run: |
+          $taskReleaseRoot = (Resolve-Path -LiteralPath dist/Voxriva).Path
+          $taskUnexpected = Get-ChildItem -LiteralPath dist/Voxriva -Recurse -File | Where-Object {
+            $taskRelative = $_.FullName.Substring($taskReleaseRoot.Length+1)
+            $_.Name -eq 'model.safetensors' -or $_.Name -eq 'model.bin' -or
+            $_.Name -eq 'ai-profiles.json' -or
+            $taskRelative -match '^(Data|recordings|results|ai-chats)[\\/]'
+          }
+          if ($taskUnexpected) { throw 'Private data or model weights found in model-free release.' }
+          if (-not (Test-Path -LiteralPath dist/Voxriva/Licenses/Sources/source-manifest.json)) {
+            throw 'Matching source archive manifest missing.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Voxriva-Windows-x64-model-free
+          path: dist/Voxriva/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Build optional-shortcut Setup installer
+        shell: pwsh
+        run: ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -OutputPath release/Voxriva-2.1.0-Windows-x64-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Voxriva-Windows-x64-Setup
+          path: release/Voxriva-2.1.0-Windows-x64-Setup.exe*
+          retention-days: 7
+          if-no-files-found: error

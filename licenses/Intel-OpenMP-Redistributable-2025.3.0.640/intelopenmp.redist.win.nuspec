@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
+  <metadata>
+    <id>intelopenmp.redist.win</id>
+    <version>2025.3.0.640</version>
+    <authors>Intel Corporation</authors>
+    <owners>Intel Corporation</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="file">license.txt</license>
+    <licenseUrl>https://aka.ms/deprecateLicenseUrl</licenseUrl>
+    <icon>logo.png</icon>
+    <projectUrl>https://www.intel.com/content/www/us/en/developer/tools/oneapi/dpc-compiler.html</projectUrl>
+    <iconUrl>https://software.intel.com/sites/products/vtune/brand-intel/boxed-logo-white-classicblue-128x128.png</iconUrl>
+    <description>Package includes win-x64 and win-x86 dynamic libraries
+
+Intel OpenMP* Runtime Library provides OpenMP API specification support in Intel® C Compiler, Intel® C++ Compiler and Intel® Fortran Compiler. It helps to improve performance by creating multithreaded software using shared memory and running on multi-core processor systems.</description>
+    <releaseNotes>https://www.intel.com/content/www/us/en/developer/articles/release-notes/oneapi-c-compiler-release-notes.html</releaseNotes>
+    <copyright>Copyright Intel Corporation.</copyright>
+    <tags>native intel openmp</tags>
+  </metadata>
+</package>

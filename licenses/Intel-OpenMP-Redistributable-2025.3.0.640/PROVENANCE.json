@@ -1,0 +1,14 @@
+{
+  "publisher": "Intel Corporation",
+  "package": "intelopenmp.redist.win",
+  "version": "2025.3.0.640",
+  "package_url": "https://api.nuget.org/v3-flatcontainer/intelopenmp.redist.win/2025.3.0.640/intelopenmp.redist.win.2025.3.0.640.nupkg",
+  "package_sha256": "a4212c4aec3e528864d56d8b0c87103cd5c21a888d1985124909a1f85624a449",
+  "dll": "runtimes/win-x64/native/libiomp5md.dll",
+  "dll_bytes": 1614192,
+  "dll_sha256": "982233366b0afcda1e0f55a0b134097e35b779613f54ddb69e685e6cd06b755f",
+  "license": "Intel Simplified Software License, October 2022",
+  "official_runtime_redistributable_description": "https://www.intel.com/content/www/us/en/developer/articles/guide/installing-performance-libraries-using-nuget.html",
+  "notices": ["LICENSE.txt", "third-party-programs.txt", "intelopenmp.redist.win.nuspec"],
+  "scope": "The unmodified Intel DLL and accompanying notices; does not relicense Voxriva app source, Qt, FFmpeg or model weights."
+}
