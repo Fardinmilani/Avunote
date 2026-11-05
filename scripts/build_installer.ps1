@@ -7,6 +7,17 @@ param(
     [switch]$PrepareOnly
 )
 $ErrorActionPreference = 'Stop'
+function Get-Sha256Hex([string]$LiteralPath) {
+    $taskHashStream = $null
+    $taskHashAlgorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $taskHashStream = [IO.File]::OpenRead($LiteralPath)
+        return [BitConverter]::ToString($taskHashAlgorithm.ComputeHash($taskHashStream)).Replace('-','').ToLowerInvariant()
+    } finally {
+        if ($taskHashStream) { $taskHashStream.Dispose() }
+        $taskHashAlgorithm.Dispose()
+    }
+}
 $taskSourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $taskReleaseRoot = (Resolve-Path -LiteralPath $ReleaseDir).Path.TrimEnd('\','/')
 if (-not $OutputPath) { $OutputPath = Join-Path $taskSourceRoot "release/Voxriva-$Version-Windows-x64-Setup.exe" }
@@ -80,7 +91,7 @@ if (-not $Makensis -and $DownloadNsis) {
         Write-Host 'Downloading the 2.36 MB NSIS 3.13 portable compiler; models and audio are not transferred.'
         Invoke-WebRequest -Uri 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip' -OutFile $taskZipPath
     }
-    if ((Get-Item -LiteralPath $taskZipPath).Length -ne 2363925 -or (Get-FileHash -LiteralPath $taskZipPath -Algorithm SHA256).Hash -ne $taskSha) {
+    if ((Get-Item -LiteralPath $taskZipPath).Length -ne 2363925 -or (Get-Sha256Hex $taskZipPath) -ne $taskSha) {
         throw 'NSIS archive size or SHA-256 does not match the official release.'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -107,6 +118,6 @@ $taskArgs = @('/NOCONFIG','/V3',"/DRELEASEDIR=$taskReleaseRoot", "/DUNINSTALL_IN
               (Join-Path $taskSourceRoot 'installer/voxriva.nsi'))
 & $Makensis @taskArgs
 if ($LASTEXITCODE -ne 0) { throw 'NSIS installer compilation failed.' }
-$taskHash = (Get-FileHash -LiteralPath $taskOutput -Algorithm SHA256).Hash.ToLowerInvariant()
+$taskHash = Get-Sha256Hex $taskOutput
 [IO.File]::WriteAllText($taskOutput+'.sha256.txt',($taskHash+'  '+[IO.Path]::GetFileName($taskOutput)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
 Write-Host "Installer ready: $taskOutput"

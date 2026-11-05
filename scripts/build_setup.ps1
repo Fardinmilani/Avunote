@@ -43,6 +43,18 @@ function Get-LocalSetting([object]$Settings, [string]$Name) {
     return $null
 }
 
+function Get-Sha256Hex([string]$LiteralPath) {
+    $taskHashStream = $null
+    $taskHashAlgorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $taskHashStream = [IO.File]::OpenRead($LiteralPath)
+        return [BitConverter]::ToString($taskHashAlgorithm.ComputeHash($taskHashStream)).Replace('-','').ToLowerInvariant()
+    } finally {
+        if ($taskHashStream) { $taskHashStream.Dispose() }
+        $taskHashAlgorithm.Dispose()
+    }
+}
+
 try {
     New-Item -ItemType Directory -Path $taskLogs -Force | Out-Null
     $taskStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
@@ -176,7 +188,7 @@ print('Matching-source cache verified.' if not missing else 'Explicit source dow
         foreach ($taskSource in Get-ChildItem -LiteralPath (Join-Path $taskRoot 'app') -Filter '*.py' -File) {
             $taskCopied = Join-Path $taskRelease ('app/'+$taskSource.Name)
             if (-not (Test-Path -LiteralPath $taskCopied) -or
-                (Get-FileHash -LiteralPath $taskSource.FullName -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $taskCopied -Algorithm SHA256).Hash) {
+                (Get-Sha256Hex $taskSource.FullName) -ne (Get-Sha256Hex $taskCopied)) {
                 throw 'The source changed during the build or was not copied completely. Wait for editing to finish, then build again.'
             }
         }
