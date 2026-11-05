@@ -1,4 +1,13 @@
-# Voxriva 2.1
+# Voxriva 2.1.1
+
+## Windows progress-file fix in 2.1.1
+
+Fixes `PermissionError: [WinError 5]` when Windows briefly locks a progress file
+while the interface reads it. Atomic updates retry temporary sharing failures,
+and interface reads allow replacement of the file. An unavailable progress update
+does not stop recognition; transcript and checkpoint save failures remain errors.
+Close Voxriva before installing the update in its existing directory. Existing
+models and local profile data are preserved, so models need no repeat download.
 
 ## Processing device and long recordings
 

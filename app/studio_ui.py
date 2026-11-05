@@ -22,6 +22,7 @@ from model_downloads import DownloadManager
 from ui_i18n import (tr, set_language, current_language, UI_LANGUAGES,
                      RTL_LANGUAGES, register_speech_languages, language_title)
 from studio_theme import THEMES, resolve_theme, stylesheet as theme_stylesheet
+from atomic_files import atomic_write_text, read_text_shared
 
 register_speech_languages(LANGUAGES)
 
@@ -307,7 +308,7 @@ class Studio(QMainWindow):
         self.model_readiness = {}
         self.saved_settings = {}
         try:
-            self.saved_settings = json.loads((self.data/'settings.json').read_text(encoding='utf-8'))
+            self.saved_settings = json.loads(read_text_shared(self.data/'settings.json'))
             if not isinstance(self.saved_settings, dict):
                 self.saved_settings = {}
         except (OSError, ValueError):
@@ -847,9 +848,7 @@ class Studio(QMainWindow):
                         'device': self.compute_device.currentData(),
                         'chunk_seconds': self.chunk_seconds.currentData()})
         try:
-            temporary = self.data/'settings.json.tmp'
-            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-            os.replace(temporary, self.data/'settings.json')
+            atomic_write_text(self.data/'settings.json', json.dumps(payload, ensure_ascii=False, indent=2))
             self.saved_settings = payload
             return True
         except OSError:
@@ -1243,7 +1242,7 @@ class Studio(QMainWindow):
                       'fallback': 'بازگشت به CPU'}
             phase = 'آماده‌سازی'
             try:
-                progress = json.loads(self.output.with_suffix('.progress.json').read_text(encoding='utf-8'))
+                progress = json.loads(read_text_shared(self.output.with_suffix('.progress.json')))
                 phase = phases.get(progress['phase'], phase)
                 if progress['phase'] == 'transcribing':
                     if isinstance(progress.get('fraction'), (int, float)):
@@ -1279,7 +1278,7 @@ class Studio(QMainWindow):
             self.status.setText('تبدیل متوقف شد؛ می‌توانید فایل یا مدل دیگری انتخاب کنید.')
         else:
             try:
-                metrics = json.loads(self.output.with_suffix('.metrics.json').read_text(encoding='utf-8'))
+                metrics = json.loads(read_text_shared(self.output.with_suffix('.metrics.json')))
                 if returncode or metrics.get('status') != 'success':
                     raise RuntimeError('\n'.join(metrics.get('errors', [])) or 'تبدیل کامل نشد.')
                 self.display_result(self.output, metrics)
@@ -1298,7 +1297,7 @@ class Studio(QMainWindow):
         self.refresh_history()
 
     def display_result(self, path, metrics):
-        self.raw_text = path.read_text(encoding='utf-8')
+        self.raw_text = read_text_shared(path)
         self.text.setPlainText(self.raw_text)
         self.update_transcript_direction(metrics.get('language'))
         self.copy_button.setEnabled(True)
@@ -1311,8 +1310,8 @@ class Studio(QMainWindow):
                                    f'کل: {metrics.get("total_seconds",0):.1f} ثانیه   |   '
                                    f'RAM: {metrics.get("peak_rss_mib_sampled",0):.0f} MiB   |   '
                                    f'{str(metrics.get("device", "cpu")).upper()}')
-        if metrics.get('fallback_reasons'):
-            self.metrics_label.setToolTip('\n'.join(str(x) for x in metrics['fallback_reasons']))
+        notes = [*metrics.get('fallback_reasons', []), *metrics.get('warnings', [])]
+        self.metrics_label.setToolTip('\n'.join(str(x) for x in notes))
 
     def maybe_prompt_star(self):
         """One optional invitation; never signs in or stars on the user's behalf."""
@@ -1351,7 +1350,7 @@ class Studio(QMainWindow):
         records = []
         for path in sorted((self.data/'results').glob('*.metrics.json'), key=lambda p:p.stat().st_mtime, reverse=True)[:200]:
             try:
-                metrics = json.loads(path.read_text(encoding='utf-8'))
+                metrics = json.loads(read_text_shared(path))
                 text_path = path.with_name(path.name.replace('.metrics.json', '.txt'))
                 if metrics.get('status') == 'success' and text_path.exists():
                     records.append((text_path, metrics))
@@ -1372,7 +1371,7 @@ class Studio(QMainWindow):
         if self.busy or self.recording:
             return
         path = self.history_paths[row]
-        metrics = json.loads(path.with_suffix('.metrics.json').read_text(encoding='utf-8'))
+        metrics = json.loads(read_text_shared(path.with_suffix('.metrics.json')))
         self.display_result(path, metrics)
         self.show_page(0)
         self.status.setText('نتیجه ذخیره‌شده از تاریخچه نمایش داده شد.')

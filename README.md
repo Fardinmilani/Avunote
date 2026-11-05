@@ -20,6 +20,8 @@ The interface opens in English by default and can be switched to Persian, Turkis
 
 Run Setup to choose an installation directory and optionally create a desktop shortcut on the finish page. Alternatively, extract the entire Windows ZIP and open `Voxriva.exe`; keep `app`, `_internal` and license/source files together. The CPU runtime is included; Python and Node.js are not separate requirements. Recognition stays local. Internet is used for model downloads and, only when explicitly chosen, cloud AI text requests. CUDA/NPU require compatible optional runtimes/drivers/models; errors recover to CPU. No high accuracy guarantee is made for every dialect or recording.
 
+Version **2.1.1** fixes the Windows `WinError 5` progress-file sharing error. Close Voxriva and run the updated Setup to upgrade the existing installation; downloaded models and local profile data are preserved.
+
 See [Voxriva 2.1 features, hardware setup and AI privacy](FEATURES_2_1.md). In particular, Google AI Studio free quotas and privacy terms vary, and local AI requires a running local server/model. AI does not modify the original transcript. Keys are session-only or opt-in Windows-DPAPI encrypted, outside this repository. Setup and portable binaries belong in GitHub Releases; the source package excludes them and model weights.
 
 ## Run from source

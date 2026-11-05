@@ -1,5 +1,7 @@
 """Offline engine contract tests; no weights, downloads, or audio uploads."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -116,6 +118,61 @@ class EngineContract(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertFalse(self.calls)
         self.assertIn('FileNotFoundError',metrics['errors'][0])
+
+    def test_final_progress_lock_does_not_turn_saved_result_into_failure(self):
+        write = engine.write_json
+        def locked_final_progress(path, payload, **kwargs):
+            if Path(path).name.endswith('.progress.json') and payload['phase'] == 'done':
+                raise PermissionError('Windows status file is held by another reader')
+            return write(path, payload, **kwargs)
+        with patch.object(engine, 'write_json', side_effect=locked_final_progress), \
+             contextlib.redirect_stderr(io.StringIO()):
+            result, output, metrics = self.run_engine('fa')
+        self.assertEqual(result, 0, metrics)
+        self.assertEqual(metrics['status'], 'success')
+        self.assertEqual(metrics['errors'], [])
+        self.assertEqual(metrics['progress_write_failures'], 1)
+        self.assertEqual(len(metrics['warnings']), 1)
+        self.assertEqual(output.read_text(encoding='utf-8'), self.text)
+
+    def test_unavailable_progress_file_is_advisory_throughout_transcription(self):
+        write = engine.write_json
+        def locked_progress(path, payload, **kwargs):
+            if Path(path).name.endswith('.progress.json'):
+                raise PermissionError('Busy progress file')
+            return write(path, payload, **kwargs)
+        with patch.object(engine, 'write_json', side_effect=locked_progress), \
+             contextlib.redirect_stderr(io.StringIO()):
+            result, output, metrics = self.run_engine('fa')
+        self.assertEqual(result, 0, metrics)
+        self.assertEqual(metrics['status'], 'success')
+        self.assertGreater(metrics['progress_write_failures'], 1)
+        self.assertEqual(len(metrics['warnings']), 1)
+        self.assertEqual(output.read_text(encoding='utf-8'), self.text)
+
+    def test_result_storage_failure_remains_a_real_error(self):
+        with patch.object(engine, '_write_text', side_effect=PermissionError('Result folder is not writable')), \
+             contextlib.redirect_stderr(io.StringIO()):
+            result, output, metrics = self.run_engine('fa')
+        self.assertEqual(result, 1)
+        self.assertEqual(metrics['status'], 'failed')
+        self.assertIn('Result folder is not writable', metrics['errors'][0])
+        self.assertFalse(output.exists())
+
+    def test_final_metrics_error_does_not_hide_original_failure(self):
+        write = engine.write_json
+        def locked_metrics(path, payload, **kwargs):
+            if Path(path).name.endswith('.metrics.json'):
+                raise PermissionError('Metrics file is locked permanently')
+            return write(path, payload, **kwargs)
+        log = io.StringIO()
+        with patch.object(engine, 'find_local_model', return_value=None), \
+             patch.object(engine, 'write_json', side_effect=locked_metrics), \
+             contextlib.redirect_stderr(log):
+            result = engine.transcribe(self.audio, self.root/'failed.txt', 'multilingual-tiny', language='fa')
+        self.assertEqual(result, 1)
+        self.assertIn('FileNotFoundError', log.getvalue())
+        self.assertIn('Could not save final processing metrics', log.getvalue())
 
 
 if __name__=='__main__':

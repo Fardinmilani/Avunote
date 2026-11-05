@@ -27,7 +27,7 @@ SetFont "Segoe UI" 9
   !error "SOURCE_ROOT is required."
 !endif
 !ifndef APP_VERSION
-  !define APP_VERSION "2.1.0"
+  !define APP_VERSION "2.1.1"
 !endif
 !ifndef ESTIMATED_KIB
   !define ESTIMATED_KIB 0

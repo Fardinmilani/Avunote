@@ -8,7 +8,7 @@ if not vendor.is_file():
     raise SystemExit('Build the audio-only LGPL FFmpeg described in vendor/README.md first.')
 hidden = ['torch', 'numpy', 'psutil', 'sounddevice', 'requests', 'ctranslate2', 'tokenizers',
           'wave', 'array', 'uuid', 'tempfile', 'threading', 'traceback',
-          'ctypes', 'ctypes.wintypes', 'base64', 'ipaddress', 'email.utils',
+          'ctypes', 'ctypes.wintypes', 'msvcrt', 'base64', 'ipaddress', 'email.utils',
           'PySide6.QtWidgets', 'PySide6.QtGui', 'PySide6.QtCore',
           'transformers', 'transformers.models.whisper.processing_whisper',
           'transformers.models.whisper.modeling_whisper',
@@ -26,7 +26,7 @@ paths = [str(project/'app')] + ([qtpath] if qtpath else [])
 a = Analysis([str(project/'app/entrypoint.py')], pathex=paths,
              binaries=collect_dynamic_libs('_sounddevice_data')+collect_dynamic_libs('ctranslate2'),
              datas=datas, hiddenimports=hidden,
-             excludes=['studio_ui', 'studio_engine', 'model_catalog', 'model_downloads', 'ui_i18n', 'ui_locales',
+             excludes=['studio_ui', 'studio_engine', 'model_catalog', 'model_downloads', 'ui_i18n', 'ui_locales', 'atomic_files',
                        'ai_panel', 'ai_clients', 'ai_profiles', 'compute_devices', 'studio_theme', 'ui_v3_strings',
                        'tkinter', 'librosa', 'numba', 'llvmlite', 'sklearn', 'scipy', 'av',
                        'torchaudio', 'torchvision', 'matplotlib', 'pandas', 'pytest', 'soundfile',

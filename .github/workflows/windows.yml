@@ -116,10 +116,10 @@ jobs:
           if-no-files-found: error
       - name: Build optional-shortcut Setup installer
         shell: pwsh
-        run: ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -OutputPath release/Voxriva-2.1.0-Windows-x64-Setup.exe
+        run: ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -OutputPath release/Voxriva-2.1.1-Windows-x64-Setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: Voxriva-Windows-x64-Setup
-          path: release/Voxriva-2.1.0-Windows-x64-Setup.exe*
+          path: release/Voxriva-2.1.1-Windows-x64-Setup.exe*
           retention-days: 7
           if-no-files-found: error

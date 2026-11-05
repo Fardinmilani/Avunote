@@ -14,6 +14,7 @@ import wave
 
 from model_catalog import CATALOG, LANGUAGES, get_model, models_for_language, find_local_model
 from compute_devices import resolve_device, gpu_memory_sample, find_openvino_model
+from atomic_files import atomic_write_text
 
 
 def ffmpeg_executable():
@@ -25,17 +26,12 @@ def ffmpeg_executable():
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def write_json(path, payload):
-    path = Path(path)
-    temporary = path.with_suffix(path.suffix+'.tmp')
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temporary, path)
+def write_json(path, payload, *, timeout=2.0):
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2), timeout=timeout)
 
 
 def _write_text(path, value):
-    temporary = path.with_suffix(path.suffix+'.tmp')
-    temporary.write_text(value, encoding='utf-8')
-    os.replace(temporary, path)
+    atomic_write_text(path, value)
 
 
 def wav_info(path):
@@ -185,18 +181,28 @@ def transcribe(audio_path, output_path, model_key='whisper-base-full', beams=5, 
     start = time.perf_counter()
     report = {'subfolder': model_key, 'language': language, 'requested_device': device,
               'device': 'cpu', 'actual_device': 'cpu', 'devices_used': [], 'chunk_seconds': chunk_seconds,
-              'beams': beams, 'errors': [], 'fallback_reasons': [], 'fallback_events': [],
+              'beams': beams, 'errors': [], 'warnings': [], 'progress_write_failures': 0,
+              'fallback_reasons': [], 'fallback_events': [],
               'peak_rss_mib_sampled': 0, 'gpu_peak_memory_mib_sampled': None,
               'load_seconds': 0.0, 'inference_seconds': 0.0, 'chunks': [], 'status': 'preparing',
               'completed_audio_seconds': 0.0, 'skip_digital_silence': bool(skip_digital_silence)}
     stop, monitor, runner = threading.Event(), None, None
+    exit_code = 1
     metrics_path = output.with_suffix('.metrics.json')
 
     def progress(phase, **values):
-        write_json(output.with_suffix('.progress.json'), {'phase': phase,
-                   'elapsed_seconds': time.perf_counter()-start, 'actual_device': report['actual_device'],
-                   'device': report['device'], 'requested_device': device,
-                   'fallback_reasons': list(report['fallback_reasons']), **values})
+        # Progress is advisory; a busy status file must not discard decoded speech.
+        try:
+            write_json(output.with_suffix('.progress.json'), {'phase': phase,
+                       'elapsed_seconds': time.perf_counter()-start, 'actual_device': report['actual_device'],
+                       'device': report['device'], 'requested_device': device,
+                       'fallback_reasons': list(report['fallback_reasons']), **values}, timeout=.25)
+        except OSError as exc:
+            report['progress_write_failures'] += 1
+            if report['progress_write_failures'] == 1:
+                warning = 'Progress status could not be updated; transcription and result saving continue.'
+                report['warnings'].append(warning)
+                print(f'{warning} {type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
 
     def checkpoint():
         report['total_seconds'] = time.perf_counter()-start
@@ -345,17 +351,17 @@ def transcribe(audio_path, output_path, model_key='whisper-base-full', beams=5, 
             checkpoint()
             progress('done', completed=len(report['chunks']), total=len(report['chunks']), fraction=1.0,
                      processed_seconds=frames/rate, audio_seconds=frames/rate)
-        return 0
+        exit_code = 0
     except Exception as exc:
         detail = exc.stderr.decode('utf-8', errors='replace') if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         report['status'] = 'failed'
         report['errors'].append(f'{type(exc).__name__}: {detail}')
         report['traceback'] = traceback.format_exc()
+        print(report['traceback'], file=sys.stderr, flush=True)
         try:
             progress('error', error=detail, processed_seconds=report['completed_audio_seconds'])
         except OSError:
             pass
-        return 1
     finally:
         stop.set()
         if monitor:
@@ -366,4 +372,12 @@ def transcribe(audio_path, output_path, model_key='whisper-base-full', beams=5, 
             except Exception:
                 pass
         report['total_seconds'] = time.perf_counter()-start
-        write_json(metrics_path, report)
+        try:
+            write_json(metrics_path, report)
+        except OSError as exc:
+            # Do not mask an earlier decode/model/storage error with cleanup I/O.
+            report['status'] = 'failed'
+            exit_code = 1
+            print(f'Could not save final processing metrics: {type(exc).__name__}: {exc}',
+                  file=sys.stderr, flush=True)
+    return exit_code
