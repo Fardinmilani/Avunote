@@ -1,36 +1,89 @@
-"""Semantic colors and native widget styling for Avunote's two appearances."""
+"""Avunote "Signal" design system: monochrome instrument surfaces with one tally accent."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from string import Template
+import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QComboBox
 
 THEMES = ('system', 'light', 'dark')
 
+# signal is the single tally accent (record, live state, progress, focus);
+# brand is its text-safe variant for links and accent captions.
 COLORS = {
     'light': dict(
-        canvas='#F7F7F4', rail='#EFEFEB', surface='#FFFFFF', inset='#F3F3F0',
-        text='#222421', muted='#575B55', line='#DEDFD8', outline='#888E83',
-        brand='#5140B2', action='#5844C4', action_hover='#4937A9', action_ink='#FFFFFF',
-        brand_soft='#EEEBFA', brand_line='#DAD3F1', focus='#5B43C9',
-        hover='#EFEFEB', pressed='#E6E7E1', disabled='#F0F0EC', disabled_ink='#70756D',
-        good='#205C49', good_bg='#EAF3ED', warn='#77511E', warn_bg='#FBF0DF',
-        danger='#A0354C', danger_bg='#FBEAF0', thumb='#A3AA9D',
-        hero='#F3F3F0', wave='#8D81B7', chat_reply='#FFFFFF',
+        canvas='#FFFFFF', rail='#F4F4F5', surface='#FFFFFF', inset='#FAFAFA',
+        text='#0A0A0A', muted='#52525B', faint='#63636B', line='#E4E4E7', line_strong='#D4D4D8',
+        outline='#85858E', brand='#B83A06', action='#0A0A0A', action_hover='#2A2A2E', action_ink='#FFFFFF',
+        signal='#FF4F0F', signal_hover='#FF6A33', signal_ink='#0A0A0A',
+        brand_soft='#FFF2EA', brand_line='#FFD3BD', focus='#E5480E',
+        hover='#EFEFF1', pressed='#E4E4E7', disabled='#F4F4F5', disabled_ink='#85858E',
+        good='#13733A', good_bg='#EEF9F1', warn='#8A5200', warn_bg='#FFF6E0',
+        danger='#BE1E1E', danger_bg='#FFF0EF', thumb='#C9C9CF',
+        hero='#FFFFFF', wave='#C9C9CF', chat_reply='#FFFFFF', chat_user='#F4F4F5',
     ),
     'dark': dict(
-        canvas='#191B19', rail='#151715', surface='#212420', inset='#1B1E1B',
-        text='#F2F3EF', muted='#BABFB5', line='#373C35', outline='#777E72',
-        brand='#CBBFFF', action='#C6B9FF', action_hover='#D6CDFF', action_ink='#251C43',
-        brand_soft='#332D45', brand_line='#54486B', focus='#CDBDFF',
-        hover='#2A2D27', pressed='#343930', disabled='#282C26', disabled_ink='#A4AA9E',
-        good='#A8DCC1', good_bg='#273B30', warn='#F3D09D', warn_bg='#3A3124',
-        danger='#FFBBC8', danger_bg='#402B32', thumb='#6F786A',
-        hero='#212420', wave='#8475A8', chat_reply='#212420',
+        canvas='#0B0B0C', rail='#111113', surface='#18181B', inset='#0F0F10',
+        text='#F4F4F5', muted='#A1A1AA', faint='#8E8E96', line='#222225', line_strong='#303035',
+        outline='#6E6E77', brand='#FF8A50', action='#F4F4F5', action_hover='#FFFFFF', action_ink='#0A0A0A',
+        signal='#FF5A1F', signal_hover='#FF7440', signal_ink='#0A0A0A',
+        brand_soft='#2A160C', brand_line='#5A2A12', focus='#FF6A2B',
+        hover='#1C1C1F', pressed='#26262A', disabled='#161618', disabled_ink='#71717A',
+        good='#5BE08C', good_bg='#0E2416', warn='#FBC23C', warn_bg='#2A1F06',
+        danger='#FF8A8A', danger_bg='#2C1212', thumb='#3F3F46',
+        hero='#111113', wave='#3A3A40', chat_reply='#0B0B0C', chat_user='#1A1A1D',
     ),
 }
+
+_FONTS_LOADED = False
+
+
+def asset_root():
+    return Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
+
+
+def load_fonts():
+    """Register the bundled Vazirmatn family once; Latin UI uses Windows' own Segoe faces."""
+    global _FONTS_LOADED
+    if _FONTS_LOADED:
+        return
+    _FONTS_LOADED = True
+    for path in sorted((asset_root()/'assets'/'fonts').glob('*.ttf')):
+        QFontDatabase.addApplicationFont(str(path))
+
+
+def font_roles(rtl=False):
+    load_fonts()
+    available = set(QFontDatabase.families())
+
+    def first(*names):
+        return next((name for name in names if name in available), names[-1])
+
+    if rtl:
+        ui = display = first('Vazirmatn', 'Segoe UI')
+    else:
+        ui = first('Segoe UI Variable Text', 'Segoe UI')
+        display = first('Segoe UI Variable Display', 'Segoe UI')
+    return {'ui_font': ui, 'display_font': display, 'mono_font': first('Cascadia Mono', 'Consolas'),
+            'script_font': first('Vazirmatn', 'Segoe UI')}
+
+
+def animations_enabled():
+    """Honor Windows' "Show animations" accessibility switch (reduced motion)."""
+    if os.name != 'nt':
+        return True
+    try:
+        import ctypes
+        value = ctypes.c_int(1)
+        if ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(value), 0):
+            return bool(value.value)
+    except (AttributeError, OSError):
+        pass
+    return True
 
 
 class ChevronComboBox(QComboBox):
@@ -45,9 +98,9 @@ class ChevronComboBox(QComboBox):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.ButtonText), 1.6,
-                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        x = 14 if self.layoutDirection() == Qt.LayoutDirection.RightToLeft else self.width()-15
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.ButtonText), 1.4,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap))
+        x = 16 if self.layoutDirection() == Qt.LayoutDirection.RightToLeft else self.width()-17
         y = self.height()//2
         painter.drawLine(x-4, y-2, x, y+2)
         painter.drawLine(x, y+2, x+4, y-2)
@@ -64,12 +117,12 @@ def native_palette(theme):
     palette = QPalette()
     for role, key in (
         (QPalette.ColorRole.Window, 'canvas'), (QPalette.ColorRole.WindowText, 'text'),
-        (QPalette.ColorRole.Base, 'surface'), (QPalette.ColorRole.AlternateBase, 'inset'),
-        (QPalette.ColorRole.Text, 'text'), (QPalette.ColorRole.PlaceholderText, 'muted'),
+        (QPalette.ColorRole.Base, 'surface'), (QPalette.ColorRole.AlternateBase, 'rail'),
+        (QPalette.ColorRole.Text, 'text'), (QPalette.ColorRole.PlaceholderText, 'faint'),
         (QPalette.ColorRole.Button, 'surface'), (QPalette.ColorRole.ButtonText, 'text'),
-        (QPalette.ColorRole.Highlight, 'action'), (QPalette.ColorRole.HighlightedText, 'action_ink'),
-        (QPalette.ColorRole.Link, 'brand'), (QPalette.ColorRole.ToolTipBase, 'surface'),
-        (QPalette.ColorRole.ToolTipText, 'text'),
+        (QPalette.ColorRole.Highlight, 'signal'), (QPalette.ColorRole.HighlightedText, 'signal_ink'),
+        (QPalette.ColorRole.Link, 'brand'), (QPalette.ColorRole.ToolTipBase, 'text'),
+        (QPalette.ColorRole.ToolTipText, 'canvas'),
     ):
         palette.setColor(role, QColor(colors[key]))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
@@ -78,116 +131,155 @@ def native_palette(theme):
 
 
 _STYLE = Template("""
-QWidget {font-family: "Segoe UI"; font-size: 14px; color: $text;}
-QMainWindow, QWidget#shell, QWidget#page, QDialog, QMessageBox {background: $canvas;}
-QFrame#rail {background: $rail; $rail_border: 1px solid $line;}
-QFrame#toolStrip, QFrame#captureDock, QFrame#modelCard, QFrame#editorSurface {
-    background: $surface; border: 1px solid $line; border-radius: 13px;
+QWidget {font-family: "$ui_font"; font-size: 14px; color: $text;}
+QMainWindow, QWidget#shell, QWidget#page, QStackedWidget#workspace, QDialog, QMessageBox {background: $canvas;}
+
+QFrame#topBar {background: $canvas; border: 0; border-bottom: 1px solid $line;}
+QFrame#console {background: $rail; border: 0; border-$end: 1px solid $line;}
+QFrame#chatSide {background: $rail; border: 0;}
+QWidget#consoleBody {background: $rail;}
+QFrame#deck {background: $rail; border: 0; border-top: 1px solid $line;}
+QFrame#rule {background: $line; border: 0; min-height: 1px; max-height: 1px;}
+QFrame#modelCard {background: transparent; border: 0; border-bottom: 1px solid $line; border-radius: 0;}
+QFrame#settingsRow {background: transparent; border: 0; border-top: 1px solid $line;}
+QFrame#disclosure {background: $rail; border: 0; border-radius: 12px;}
+QFrame#chatComposer {background: $rail; border: 1px solid $line; border-radius: 20px;}
+QFrame#chatReference {background: transparent; border: 0; border-$start: 2px solid $signal; border-radius: 0;}
+
+QLabel#heading {font-family: "$display_font"; font-size: 30px; font-weight: 600; color: $text;}
+QLabel#display {font-family: "$display_font"; font-size: 24px; font-weight: 600; color: $text;}
+QLabel#cardTitle, QLabel#libraryTitle, QLabel#sectionTitle {font-size: 15px; font-weight: 600;}
+QLabel#muted, QLabel#modelStatus {color: $muted; font-size: 13px;}
+QLabel#fieldLabel {color: $muted; font-size: 12px; font-weight: 600;}
+QLabel#meta {font-family: "$mono_font"; font-size: 12px; color: $faint;}
+QLabel#emptyGlyph {background: transparent; border: 0;}
+QLabel#modelNotice {
+    color: $muted; font-size: 13px; background: transparent; border: 0; border-radius: 0;
+    border-$start: 2px solid $line_strong; padding: 3px 0; padding-$start: 12px;
 }
-QFrame#chatSide {background: $rail; border: 1px solid $line; border-radius: 12px;}
-QFrame#chatComposer {background: $surface; border: 1px solid $outline; border-radius: 16px;}
-QFrame#disclosure {background: $inset; border-radius: 8px;}
-QFrame#chatReference {background: $inset; border: 1px solid $line; border-radius: 10px;}
-QLabel#heading {font-size: 27px; font-weight: 700;}
-QLabel#cardTitle, QLabel#libraryTitle, QLabel#sectionTitle {font-size: 16px; font-weight: 650;}
-QLabel#muted, QLabel#fieldLabel, QLabel#modelStatus, QLabel#modelNotice {color: $muted; font-size: 13px;}
-QLabel#fieldLabel {font-weight: 600;}
-QLabel#emptyGlyph {background: $brand_soft; border: 1px solid $brand_line; border-radius: 18px;}
-QLabel#modelNotice {padding: 5px 8px; border-radius: 7px;}
-QLabel#modelNotice[tone="ready"], QLabel#modelStatus[tone="ready"] {color: $good;}
-QLabel#modelNotice[tone="warning"], QLabel#modelStatus[tone="warning"] {color: $warn;}
-QLabel#modelNotice[tone="error"], QLabel#modelStatus[tone="error"] {color: $danger;}
-QLabel#modelNotice[tone="info"], QLabel#modelStatus[tone="info"] {color: $brand;}
-QLabel#modelNotice[tone="warning"] {background: $warn_bg;}
-QLabel#modelNotice[tone="error"] {background: $danger_bg;}
-QLabel#modelNotice[tone="info"] {background: $brand_soft;}
-QLabel#modelNotice[tone="ready"] {background: $good_bg;}
+QLabel#modelNotice[tone="ready"] {color: $good; border-$start-color: $good;}
+QLabel#modelNotice[tone="warning"] {color: $warn; border-$start-color: $warn;}
+QLabel#modelNotice[tone="error"] {color: $danger; border-$start-color: $danger;}
+QLabel#modelNotice[tone="info"] {color: $brand; border-$start-color: $signal;}
+QLabel#modelStatus[tone="ready"] {color: $good;}
+QLabel#modelStatus[tone="warning"] {color: $warn;}
+QLabel#modelStatus[tone="error"] {color: $danger;}
+QLabel#modelStatus[tone="info"] {color: $brand;}
 
 QPushButton, QToolButton {
-    background: $surface; color: $text; border: 1px solid $outline;
-    border-radius: 8px; padding: 7px 12px; font-weight: 550;
+    background: transparent; color: $text; border: 1px solid $line_strong;
+    border-radius: 22px; padding: 0 18px; font-weight: 500;
 }
-QPushButton:hover, QToolButton:hover {background: $hover; border-color: $text;}
+QPushButton:hover, QToolButton:hover {background: $hover; border-color: $outline;}
 QPushButton:pressed, QToolButton:pressed {background: $pressed;}
-QPushButton#primary {background: $action; color: $action_ink; border-color: $action; font-weight: 650;}
+QPushButton#primary {background: $action; color: $action_ink; border-color: $action; font-weight: 600;}
 QPushButton#primary:hover {background: $action_hover; border-color: $action_hover;}
-QPushButton#primary:pressed {background: $brand_soft; color: $brand; border-color: $brand;}
-QPushButton#accent {background: $brand_soft; color: $brand; border-color: $brand_line; font-weight: 600;}
-QPushButton#accent:hover {border-color: $brand;}
-QPushButton#danger {background: $danger_bg; color: $danger; border-color: $danger;}
-QPushButton#link, QPushButton#quiet, QPushButton#nav {background: transparent; border: 1px solid transparent;}
-QPushButton#link {color: $brand;}
-QPushButton#quiet, QPushButton#nav {color: $muted;}
-QPushButton#quiet:hover, QPushButton#nav:hover, QPushButton#link:hover {background: $hover; color: $text;}
-QPushButton#quiet:checked {background: $brand_soft; color: $brand;}
-QPushButton#nav {text-align: $alignment; padding: 8px 9px; font-weight: 600;}
-QPushButton#nav:checked {background: $surface; border-color: $line; color: $brand;}
-QPushButton:disabled, QPushButton#primary:disabled, QPushButton#accent:disabled, QToolButton:disabled {
+QPushButton#record {
+    background: $signal; color: $signal_ink; border: 1px solid $signal; border-radius: 26px;
+    font-weight: 600; font-size: 15px;
+}
+QPushButton#record:hover {background: $signal_hover; border-color: $signal_hover;}
+QPushButton#danger {background: transparent; color: $danger; border-color: $danger; border-radius: 22px;}
+QPushButton#danger:hover {background: $danger_bg;}
+QPushButton#accent {background: transparent; color: $text; border-color: $signal; font-weight: 600;}
+QPushButton#accent:hover {background: $brand_soft;}
+QPushButton#link, QPushButton#quiet {background: transparent; border: 1px solid transparent;}
+QPushButton#link {color: $brand; border-radius: 8px; padding: 0 6px; text-align: $alignment;}
+QPushButton#quiet {color: $muted; padding: 0 12px;}
+QPushButton#quiet:hover, QPushButton#link:hover {background: $hover; color: $text;}
+QPushButton#quiet:checked {background: $surface; color: $text; border-color: $line_strong;}
+QPushButton#nav {
+    background: transparent; color: $muted; border: 0; border-radius: 0;
+    border-bottom: 2px solid transparent; border-top: 2px solid transparent;
+    padding: 0 2px; margin: 0 10px; font-weight: 500;
+}
+QPushButton#nav:hover {color: $text;}
+QPushButton#nav:checked {color: $text; border-bottom-color: $signal; font-weight: 600;}
+QPushButton:disabled, QPushButton#primary:disabled, QPushButton#record:disabled,
+QPushButton#accent:disabled, QPushButton#danger:disabled, QToolButton:disabled {
     background: $disabled; color: $disabled_ink; border-color: $line;
 }
-QPushButton#quiet:disabled, QPushButton#link:disabled {
+QPushButton#quiet:disabled, QPushButton#link:disabled, QPushButton#nav:disabled {
     background: transparent; color: $disabled_ink; border-color: transparent;
 }
-QPushButton:focus, QToolButton:focus, QPushButton#nav:focus, QPushButton#link:focus,
-QPushButton#quiet:focus, QPushButton#accent:focus, QPushButton#danger:focus,
-QPushButton#secondary:focus {border: 2px solid $focus;}
-QPushButton#primary:focus {border: 2px solid $action_ink;}
+QPushButton:focus, QToolButton:focus, QPushButton#primary:focus, QPushButton#accent:focus,
+QPushButton#danger:focus, QPushButton#quiet:focus, QPushButton#link:focus {border: 2px solid $focus;}
+QPushButton#record:focus {border: 2px solid $text;}
+QPushButton#nav:focus {color: $text; border-top: 2px solid $focus;}
 
-QComboBox, QLineEdit, QPlainTextEdit, QListWidget, QTextBrowser {
-    background: $surface; color: $text; border: 1px solid $outline; border-radius: 8px;
-    selection-background-color: $action; selection-color: $action_ink;
+QComboBox, QLineEdit, QPlainTextEdit {
+    background: $rail; color: $text; border: 1px solid transparent; border-bottom: 1px solid $outline;
+    border-radius: 0; border-top-left-radius: 6px; border-top-right-radius: 6px;
+    selection-background-color: $signal; selection-color: $signal_ink;
 }
-QComboBox {min-height: 24px; padding: 8px 10px;}
-QComboBox::drop-down {border: 0; width: 26px;}
+QFrame#console QComboBox, QFrame#deck QComboBox, QFrame#chatSide QComboBox, QDialog QLineEdit {background: $surface;}
+QComboBox {min-height: 24px; padding: 8px 12px;}
+QComboBox:hover, QLineEdit:hover {border-bottom-color: $text;}
+QComboBox::drop-down {border: 0; width: 30px;}
 QComboBox[customChevron="true"]::down-arrow {image: none;}
 QComboBox QAbstractItemView, QMenu {
-    background: $surface; color: $text; border: 1px solid $outline; padding: 4px;
-    selection-background-color: $brand_soft; selection-color: $text; outline: 0;
+    background: $surface; color: $text; border: 1px solid $line_strong; padding: 6px;
+    selection-background-color: $hover; selection-color: $text; outline: 0;
 }
-QComboBox QAbstractItemView::item {min-height: 28px; padding: 4px;}
-QMenu::item {padding: 7px 20px 7px 10px;}
-QMenu::item:selected {background: $brand_soft; color: $text;}
+QComboBox QAbstractItemView::item {min-height: 32px; padding: 4px 8px;}
+QMenu::item {padding: 8px 24px 8px 12px; border-radius: 6px;}
+QMenu::item:selected {background: $hover; color: $text;}
 QMenu::item:disabled {color: $disabled_ink;}
-QComboBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled {background: $disabled; color: $disabled_ink;}
-QLineEdit, QPlainTextEdit {padding: 8px 10px;}
-QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus, QListWidget:focus, QTextBrowser:focus,
-QTextEdit:focus, QTableWidget:focus {border: 2px solid $focus;}
-QCheckBox {spacing: 8px; padding: 4px 0;}
+QMenu::separator {height: 1px; background: $line; margin: 6px 4px;}
+QComboBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled {
+    background: $disabled; color: $disabled_ink; border-bottom-color: $line_strong;
+}
+QLineEdit, QPlainTextEdit {padding: 8px 12px;}
+QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus {border-bottom: 2px solid $focus;}
+QListWidget:focus, QTextBrowser:focus, QTableWidget:focus {border: 1px solid $focus;}
+QCheckBox {spacing: 10px; padding: 4px 0;}
 QCheckBox::indicator {width: 18px; height: 18px;}
+QCheckBox:focus {color: $text; border-bottom: 2px solid $focus;}
 
-QWidget#transcriptEmpty, QTextEdit#transcript {background: $inset; border: 0; border-radius: 9px;}
-QTextEdit#transcript {font-size: 18px; selection-background-color: $action; selection-color: $action_ink;}
-QTextEdit#transcript:focus {border: 2px solid $focus;}
+QWidget#transcriptEmpty {background: transparent;}
+QTextEdit#transcript {
+    background: transparent; border: 0; border-radius: 0; font-size: 19px;
+    selection-background-color: $signal; selection-color: $signal_ink;
+}
+QTextEdit#transcript[script="rtl"] {font-family: "$script_font"; font-size: 20px;}
+QTextEdit#transcript:focus {border: 0; border-$start: 2px solid $focus;}
 QTextBrowser#chatMessages {background: $canvas; border: 0; font-size: 15px;}
-QTextBrowser#chatMessages:focus {border: 2px solid $focus;}
-QPlainTextEdit#chatInput {background: $surface; border: 1px solid transparent; font-size: 15px;}
-QPlainTextEdit#chatInput:focus {border-color: $focus;}
-QListWidget#conversationList {background: $rail; border: 1px solid transparent; padding: 3px;}
-QListWidget#conversationList:focus {border-color: $focus;}
-QListWidget#conversationList::item {border-radius: 7px; padding: 6px 8px;}
-QListWidget#conversationList::item:selected {background: $brand_soft; color: $text;}
-QListWidget#conversationList::item:hover:!selected {background: $hover;}
+QTextBrowser#chatMessages:focus {border: 0; border-$start: 2px solid $focus;}
+QPlainTextEdit#chatInput {background: transparent; border: 0; border-radius: 12px; font-size: 15px;}
+QPlainTextEdit#chatInput:focus {background: $surface; border: 0;}
+QFrame#chatReference QPlainTextEdit {background: transparent; border: 0; color: $muted;}
+QListWidget#conversationList {background: transparent; border: 1px solid transparent; padding: 0;}
+QListWidget#conversationList::item {border-radius: 10px; padding: 8px 10px; color: $muted; border: 1px solid transparent;}
+QListWidget#conversationList::item:selected {background: $surface; color: $text; border: 1px solid $line_strong;}
+QListWidget#conversationList::item:hover:!selected {background: $hover; color: $text;}
 QSplitter::handle {background: $line;}
-QSplitter::handle:horizontal {width: 3px;}
-QProgressBar {background: $brand_soft; border: 0; border-radius: 3px; min-height: 6px; max-height: 6px;}
-QProgressBar::chunk {background: $action; border-radius: 3px;}
+QSplitter::handle:horizontal {width: 1px;}
+QProgressBar {background: $line; border: 0; border-radius: 0; min-height: 3px; max-height: 3px;}
+QProgressBar::chunk {background: $signal; border-radius: 0;}
 QScrollArea {background: transparent; border: 0;}
 QTableWidget {
-    background: $surface; alternate-background-color: $inset;
-    border: 1px solid $line; border-radius: 10px; gridline-color: $line;
-    selection-background-color: $brand_soft; selection-color: $text;
+    background: $canvas; border: 0; gridline-color: transparent;
+    selection-background-color: $rail; selection-color: $text;
 }
-QHeaderView::section {background: $rail; color: $muted; padding: 10px; border: 0; font-weight: 600;}
-QTableWidget::item {padding: 8px;}
-QScrollBar:vertical {background: $inset; width: 10px; margin: 0;}
-QScrollBar::handle:vertical {background: $thumb; border-radius: 4px; min-height: 28px; margin: 1px;}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height: 0;}
-QToolTip {background: $surface; color: $text; border: 1px solid $outline; padding: 7px;}
+QTableWidget::item {padding: 0 12px; border-bottom: 1px solid $line;}
+QTableWidget::item:selected {background: $rail; color: $text; border-bottom: 1px solid $signal;}
+QHeaderView::section {
+    background: $canvas; color: $faint; padding: 10px 12px; border: 0;
+    border-bottom: 1px solid $line_strong; font-size: 12px; font-weight: 600;
+}
+QTableCornerButton::section {background: $canvas; border: 0;}
+QScrollBar:vertical {background: transparent; width: 10px; margin: 0;}
+QScrollBar::handle:vertical {background: $thumb; border-radius: 3px; min-height: 32px; margin: 2px;}
+QScrollBar:horizontal {background: transparent; height: 10px; margin: 0;}
+QScrollBar::handle:horizontal {background: $thumb; border-radius: 3px; min-width: 32px; margin: 2px;}
+QScrollBar::add-line, QScrollBar::sub-line {width: 0; height: 0;}
+QScrollBar::add-page, QScrollBar::sub-page {background: transparent;}
+QToolTip {background: $text; color: $canvas; border: 0; padding: 6px 10px;}
 """)
 
 
 def stylesheet(resolved, rtl=False):
     return _STYLE.substitute(
-        COLORS[resolved], alignment='right' if rtl else 'left',
-        rail_border='border-left' if rtl else 'border-right',
+        COLORS[resolved], **font_roles(rtl), alignment='right' if rtl else 'left',
+        start='right' if rtl else 'left', end='left' if rtl else 'right',
     )

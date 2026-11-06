@@ -23,6 +23,7 @@ hidden = ['torch', 'numpy', 'psutil', 'sounddevice', 'requests', 'ctranslate2', 
 datas = [(str(vendor), 'vendor'), (str(project/'assets/avunote-mark.png'), 'assets'),
          (str(project/'assets/avunote-logo-transparent.png'), 'assets'),
          (str(project/'VERSION'), '.')]
+datas += [(str(path), 'assets/fonts') for path in sorted((project/'assets/fonts').glob('*'))]
 datas += collect_data_files('_sounddevice_data')
 for package in ['transformers', 'tokenizers', 'huggingface_hub', 'ctranslate2', 'sherpa-onnx', 'sherpa-onnx-core', 'requests']:
     datas += copy_metadata(package)

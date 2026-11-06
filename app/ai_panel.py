@@ -18,7 +18,7 @@ from ui_i18n import RTL_LANGUAGES, current_language, tr
 from ai_profiles import list_profiles, save_profile, get_profile, delete_profile, persistent_keys_available
 from ai_clients import chat, is_local_url, AICancelled
 from atomic_files import atomic_write_text, read_text_shared
-from studio_theme import COLORS, ChevronComboBox
+from studio_theme import COLORS, ChevronComboBox, font_roles
 from studio_icons import icon
 
 CHAT_MODES = {
@@ -216,6 +216,9 @@ class ProfileDialog(QDialog):
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.save);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText(t('Save'));buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(t('Cancel'))
+        for role in (QDialogButtonBox.StandardButton.Save, QDialogButtonBox.StandardButton.Cancel):buttons.button(role).setMinimumHeight(44)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName('primary')
+        layout.setContentsMargins(24, 24, 24, 20);layout.setSpacing(12);form.setVerticalSpacing(12);form.setHorizontalSpacing(16)
         index=self.provider.findData(self.existing.get('provider','gemini'));self.provider.setCurrentIndex(max(0,index))
         self.provider.currentIndexChanged.connect(self.defaults)
     def defaults(self):
@@ -310,15 +313,15 @@ class AIPage(QWidget):
 
         self.setObjectName('page')
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setContentsMargins(0, 0, 0, 0)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setHandleWidth(8)
+        self.splitter.setHandleWidth(1)
         outer.addWidget(self.splitter)
         self.build_chat_sidebar()
         self.build_chat_surface()
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([188, 780])
+        self.splitter.setSizes([260, 780])
         self.splitter.setChildrenCollapsible(False)
 
         self.profiles.currentIndexChanged.connect(self.profile_changed)
@@ -342,11 +345,12 @@ class AIPage(QWidget):
         sidebar = QFrame()
         sidebar.setObjectName('chatSide')
         history = QVBoxLayout(sidebar)
-        history.setContentsMargins(9, 9, 9, 9)
-        history.setSpacing(8)
+        history.setContentsMargins(16, 22, 16, 16)
+        history.setSpacing(12)
         self.new = action('New chat', self.new_chat)
-        self.new.setObjectName('accent')
+        self.new.setObjectName('primary')
         history.addWidget(self.new)
+        history.addSpacing(6)
         self.history_heading = QLabel()
         self.history_heading.setObjectName('fieldLabel')
         history.addWidget(self.history_heading)
@@ -366,8 +370,8 @@ class AIPage(QWidget):
     def build_chat_surface(self):
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 0, 8, 0)
-        layout.setSpacing(10)
+        layout.setContentsMargins(36, 26, 36, 20)
+        layout.setSpacing(14)
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
         self.heading = QLabel()
@@ -407,11 +411,11 @@ class AIPage(QWidget):
         intro.addStretch()
         self.empty_glyph = QLabel()
         self.empty_glyph.setObjectName('emptyGlyph')
-        self.empty_glyph.setFixedSize(56, 56)
+        self.empty_glyph.setFixedSize(72, 72)
         self.empty_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
         intro.addWidget(self.empty_glyph, 0, Qt.AlignmentFlag.AlignHCenter)
         self.empty_title = QLabel()
-        self.empty_title.setObjectName('heading')
+        self.empty_title.setObjectName('display')
         self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_title.setWordWrap(True)
         intro.addWidget(self.empty_title)
@@ -437,7 +441,7 @@ class AIPage(QWidget):
         self.reference_frame = QFrame()
         self.reference_frame.setObjectName('chatReference')
         reference_layout = QVBoxLayout(self.reference_frame)
-        reference_layout.setContentsMargins(10, 5, 10, 8)
+        reference_layout.setContentsMargins(14, 2, 4, 2)
         reference_layout.setSpacing(4)
         self.include = QCheckBox()
         reference_layout.addWidget(self.include)
@@ -457,8 +461,8 @@ class AIPage(QWidget):
         self.voice_frame = QFrame()
         self.voice_frame.setObjectName('chatComposer')
         compose = QVBoxLayout(self.voice_frame)
-        compose.setContentsMargins(8, 7, 8, 8)
-        compose.setSpacing(5)
+        compose.setContentsMargins(12, 10, 10, 10)
+        compose.setSpacing(6)
         self.composer = ChatComposer()
         self.composer.setObjectName('chatInput')
         self.composer.setMaximumHeight(104)
@@ -775,8 +779,9 @@ class AIPage(QWidget):
 
     def render(self):
         colors = COLORS[self._theme]
-        primary, secondary = colors['text'], colors['muted']
-        user_bg, ai_bg = colors['brand_soft'], colors['chat_reply']
+        primary, secondary = colors['text'], colors['faint']
+        user_bg, ai_bg = colors['chat_user'], colors['chat_reply']
+        script = font_roles(True)['script_font']
         visible = self.messages + ([{'role':'user','content':self.pending_question}] if self.pending_question else [])
         self.chat_view.setCurrentIndex(1 if visible else 0)
         if not visible:
@@ -792,11 +797,14 @@ class AIPage(QWidget):
                 paragraphs = []
                 for line in message['content'].split('\n'):
                     body_direction = message_direction(line, direction)
-                    paragraphs.append(f'<p dir="{body_direction}" style="margin:0">{html.escape(line) or "&nbsp;"}</p>')
+                    face = f'font-family:\'{script}\';' if body_direction == 'rtl' else ''
+                    paragraphs.append(f'<p dir="{body_direction}" style="margin:0;{face}line-height:150%">{html.escape(line) or "&nbsp;"}</p>')
                 content = ''.join(paragraphs)
                 align = ('left' if direction == 'rtl' else 'right') if user else ('right' if direction == 'rtl' else 'left')
-                width = '82%' if user else '100%'
-                blocks.append(f'<table align="{align}" width="{width}" cellpadding="12" cellspacing="0" bgcolor="{user_bg if user else ai_bg}"><tr><td dir="{direction}" style="color:{primary}"><p dir="{direction}" style="margin:0;color:{secondary}"><b>{html.escape(role)}</b></p>{content}</td></tr></table><br>')
+                width = '76%' if user else '100%'
+                padding = '14' if user else '2'
+                caption = f'<p dir="{direction}" style="margin:0 0 6px 0;color:{secondary};font-size:12px;font-weight:600">{html.escape(role)}</p>'
+                blocks.append(f'<table align="{align}" width="{width}" cellpadding="{padding}" cellspacing="0" bgcolor="{user_bg if user else ai_bg}"><tr><td dir="{direction}" style="color:{primary}">{caption}{content}</td></tr></table><p style="margin:0;font-size:10px">&nbsp;</p>')
             text = ''.join(blocks)
         self.conversation.setHtml(text)
         self.conversation.verticalScrollBar().setValue(self.conversation.verticalScrollBar().maximum())
@@ -985,14 +993,14 @@ class AIPage(QWidget):
         colors = COLORS[self._theme]
         for widget, symbol, role in (
             (self.connections, 'gear', 'muted'), (self.chat_actions, 'more', 'muted'),
-            (self.new, 'plus', 'brand'),
+            (self.new, 'plus', 'action_ink'),
             (self.attach_audio, 'plus', 'muted'), (self.use, 'file', 'muted'),
             (self.speech_settings, 'tune', 'muted'), (self.copy, 'copy', 'muted'),
             (self.stop, 'stop', 'muted'), (self.voice_cancel, 'stop', 'danger'),
             (self.send, 'send', 'action_ink'),
         ):
             widget.setIcon(icon(symbol, colors[role]))
-        self.empty_glyph.setPixmap(icon('chat', colors['brand']).pixmap(29, 29))
+        self.empty_glyph.setPixmap(icon('chat', colors['faint']).pixmap(52, 52))
         self.describe_voice_actions()
 
     def retranslate_ui(self):

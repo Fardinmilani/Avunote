@@ -75,7 +75,9 @@ class NewUiTests(unittest.TestCase):
         self.assertEqual(before, (self.window.language.currentData(), self.window.model.currentData()))
         self.window.theme_selector.setCurrentIndex(self.window.theme_selector.findData('light'))
         self.assertEqual(self.window.resolved_theme, 'light')
-        self.assertIsNone(self.window.brand_label.graphicsEffect())
+        effect = self.window.brand_label.graphicsEffect()
+        self.assertIsInstance(effect, studio_ui.QGraphicsColorizeEffect)
+        self.assertEqual(effect.color().name().upper(), studio_ui.COLORS['light']['text'])
 
     def test_worker_receives_device_and_chunk_options(self):
         audio = Path(self.folder.name)/'test.wav';audio.write_bytes(b'RIFF')

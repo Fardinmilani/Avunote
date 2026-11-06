@@ -12,7 +12,7 @@ import uuid
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QUrl, QSignalBlocker
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QIcon, QPixmap, QDesktopServices, QTextOption, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-                               QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QTextEdit,
+                               QVBoxLayout, QHBoxLayout, QComboBox, QTextEdit,
                                QFileDialog, QMessageBox, QProgressBar, QStackedWidget,
                                QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
                                QSizePolicy, QGraphicsColorizeEffect)
@@ -22,8 +22,8 @@ from model_downloads import DownloadManager
 from model_picker import ModelChoice, ModelPopupMixin
 from ui_i18n import (tr, set_language, current_language, UI_LANGUAGES,
                      RTL_LANGUAGES, register_speech_languages, language_title)
-from studio_theme import (COLORS, THEMES, ChevronComboBox, native_palette, resolve_theme,
-                          stylesheet as theme_stylesheet)
+from studio_theme import (COLORS, THEMES, ChevronComboBox, animations_enabled, asset_root, load_fonts,
+                          native_palette, resolve_theme, stylesheet as theme_stylesheet)
 from atomic_files import atomic_write_text, read_text_shared
 from app_updates import running_version
 from studio_icons import icon
@@ -43,27 +43,71 @@ DOWNLOAD_IN_PROGRESS = {'resolving', 'downloading', 'verifying'}
 class Waveform(QWidget):
     def __init__(self):
         super().__init__()
-        self.values = [.04] * 54
+        self.values = [.02] * 72
         self.active = False
         self.dark = False
-        self.setMinimumHeight(68)
+        self.setMinimumHeight(40)
         self.setAccessibleName('نمودار سطح صدای میکروفون')
 
     def push(self, level):
-        self.values = self.values[1:] + [max(.035, min(1., level*4))]
+        self.values = self.values[1:] + [max(.02, min(1., level*4))]
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        spacing = self.width()/len(self.values)
         colors = COLORS['dark' if self.dark else 'light']
-        painter.setPen(QPen(QColor(colors['brand'] if self.active else colors['wave']), max(2, spacing*.38),
-                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        middle = self.height()/2
+        painter.setPen(QPen(QColor(colors['line_strong']), 1))
+        painter.drawLine(0, int(middle), self.width(), int(middle))
+        spacing = self.width()/len(self.values)
+        painter.setPen(QPen(QColor(colors['signal'] if self.active else colors['wave']), max(1.5, spacing*.42),
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
         for index, level in enumerate(self.values):
-            height = max(4, level * (self.height()-14))
-            x = int(index*spacing + spacing/2)
-            painter.drawLine(x, int((self.height()-height)/2), x, int((self.height()+height)/2))
+            height = max(2, level * (self.height()-4))
+            x = index*spacing + spacing/2
+            painter.drawLine(int(x), int(middle - height/2), int(x), int(middle + height/2))
+
+
+class TallyLight(QWidget):
+    """A broadcast-style tally lamp: dark when idle, signal while recording, ink while processing."""
+
+    def __init__(self):
+        super().__init__()
+        self.state = 'idle'
+        self.dark = False
+        self.lit = True
+        self.setFixedSize(12, 12)
+        self.blink = QTimer(self)
+        self.blink.setInterval(650)
+        self.blink.timeout.connect(self._toggle)
+
+    def _toggle(self):
+        self.lit = not self.lit
+        self.update()
+
+    def set_state(self, state):
+        if state == self.state:
+            return
+        self.state = state
+        self.lit = True
+        if state == 'live' and animations_enabled():
+            self.blink.start()
+        else:
+            self.blink.stop()
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        colors = COLORS['dark' if self.dark else 'light']
+        color = QColor(colors['signal'] if self.state == 'live' else
+                       colors['text'] if self.state == 'busy' else colors['line_strong'])
+        if not self.lit:
+            color.setAlphaF(.3)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(1, 1, 10, 10)
 
 
 class Recorder(QThread):
@@ -194,6 +238,7 @@ def storage_root():
 def label(text, name=None):
     widget = LocalLabel(text)
     widget.setWordWrap(True)
+    widget.setAlignment(Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignVCenter)
     if name:
         widget.setObjectName(name)
     return widget
@@ -208,9 +253,20 @@ def button(text, callback, name=None, symbol=None):
         widget.setObjectName(name)
     if symbol:
         widget.setProperty('symbol', symbol)
-        widget.setIcon(icon(symbol, COLORS['light']['action_ink'] if name == 'primary' else None))
-        widget.setIconSize(QSize(19, 19))
+        widget.setIcon(icon(symbol, COLORS['light'][ICON_ROLES.get(name, 'muted')]))
+        widget.setIconSize(QSize(18, 18))
     return widget
+
+
+ICON_ROLES = {'primary': 'action_ink', 'record': 'signal_ink', 'accent': 'brand', 'link': 'brand',
+              'danger': 'danger', 'secondary': 'text'}
+
+
+def rule():
+    line = QFrame()
+    line.setObjectName('rule')
+    line.setFixedHeight(1)
+    return line
 
 
 
@@ -264,11 +320,15 @@ class Studio(QMainWindow):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if self.ui_language in RTL_LANGUAGES else Qt.LayoutDirection.LeftToRight)
         self.setAcceptDrops(True)
         self.build()
+        self.centralWidget().setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.centralWidget().setFocus(Qt.FocusReason.OtherFocusReason)
         self.apply_theme()
         QApplication.styleHints().colorSchemeChanged.connect(self.system_theme_changed)
         QShortcut(QKeySequence('Ctrl+O'), self, activated=self.choose_file)
         QShortcut(QKeySequence('Escape'), self, activated=self.cancel)
         QShortcut(QKeySequence('Ctrl+,'), self, activated=lambda: self.show_page(4))
+        for number, page in ((1, 0), (2, 3), (3, 2), (4, 1)):
+            QShortcut(QKeySequence(f'Ctrl+{number}'), self, activated=lambda page=page: self.show_page(page))
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(150)
@@ -282,52 +342,61 @@ class Studio(QMainWindow):
         self.retranslate_ui()
 
     def brand_pixmap(self, mark_only=False):
-        base = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
         asset = 'avunote-mark.png' if mark_only else 'avunote-logo-transparent.png'
-        return QPixmap(str(base/'assets'/asset))
+        return QPixmap(str(asset_root()/'assets'/asset))
 
     def build(self):
         shell = QWidget()
         shell.setObjectName('shell')
         self.setCentralWidget(shell)
-        outer = QHBoxLayout(shell)
+        outer = QVBoxLayout(shell)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        rail = QFrame()
-        rail.setObjectName('rail')
-        rail.setFixedWidth(184)
-        navigation = QVBoxLayout(rail)
-        navigation.setContentsMargins(12, 16, 12, 12)
-        navigation.setSpacing(4)
+        bar = QFrame()
+        bar.setObjectName('topBar')
+        bar.setFixedHeight(60)
+        top = QHBoxLayout(bar)
+        top.setContentsMargins(24, 0, 14, 0)
+        top.setSpacing(0)
         self.brand_label = QLabel()
         self.brand_label.setAccessibleName('Avunote')
-        self.brand_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.brand_label.setFixedHeight(52)
-        brand = self.brand_pixmap().scaled(258, 80, Qt.AspectRatioMode.KeepAspectRatio,
+        self.brand_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        brand = self.brand_pixmap().scaled(204, 56, Qt.AspectRatioMode.KeepAspectRatio,
                                            Qt.TransformationMode.SmoothTransformation)
         brand.setDevicePixelRatio(2)
         self.brand_label.setPixmap(brand)
-        navigation.addWidget(self.brand_label)
-        navigation.addSpacing(10)
+        top.addWidget(self.brand_label)
+        top.addSpacing(10)
+        self.tally = TallyLight()
+        top.addWidget(self.tally, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addSpacing(26)
 
-        self.studio_nav = button('استودیوی گفتار', lambda: self.show_page(0), 'nav', 'wave')
-        self.history_nav = button('تاریخچه', lambda: self.show_page(1), 'nav', 'history')
-        self.library_nav = button('کتابخانه مدل‌ها', lambda: self.show_page(2), 'nav', 'library')
-        self.ai_nav = button('گفت‌وگوی AI', lambda: self.show_page(3), 'nav', 'chat')
+        self.studio_nav = button('استودیوی گفتار', lambda: self.show_page(0), 'nav')
+        self.history_nav = button('تاریخچه', lambda: self.show_page(1), 'nav')
+        self.library_nav = button('کتابخانه مدل‌ها', lambda: self.show_page(2), 'nav')
+        self.ai_nav = button('گفت‌وگوی AI', lambda: self.show_page(3), 'nav')
         self.settings_nav = button('Settings', lambda: self.show_page(4), 'nav', 'gear')
         self.navigation = (self.studio_nav, self.history_nav, self.library_nav, self.ai_nav, self.settings_nav)
         for item in self.navigation:
             item.setCheckable(True)
-        for item in (self.studio_nav, self.ai_nav, self.library_nav, self.history_nav):
-            navigation.addWidget(item)
-        navigation.addStretch()
+            item.setFixedHeight(60)
+        for shortcut, item in enumerate((self.studio_nav, self.ai_nav, self.library_nav, self.history_nav), 1):
+            item.setToolTip(f'Ctrl+{shortcut}')
+            top.addWidget(item)
+        top.addStretch()
         self.update_indicator = button('Update available', self.open_updates, 'accent', 'download')
+        self.update_indicator.setMinimumHeight(36)
+        self.update_indicator.setMaximumHeight(36)
         self.update_indicator.hide()
-        navigation.addWidget(self.update_indicator)
-        navigation.addWidget(self.settings_nav)
-        navigation.addWidget(label(self.version_text, 'muted'))
-        outer.addWidget(rail)
+        top.addWidget(self.update_indicator, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addSpacing(12)
+        version = label(self.version_text, 'meta')
+        version.setWordWrap(False)
+        top.addWidget(version, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addSpacing(6)
+        top.addWidget(self.settings_nav)
+        outer.addWidget(bar)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName('workspace')
@@ -357,31 +426,45 @@ class Studio(QMainWindow):
         return row
 
     @staticmethod
-    def field(grid, column, title, control, stretch=1):
+    def field(layout, title, control):
+        group = QVBoxLayout()
+        group.setSpacing(6)
         caption = label(title, 'fieldLabel')
         caption.setBuddy(control)
-        grid.addWidget(caption, 0, column)
-        grid.addWidget(control, 1, column)
-        grid.setColumnStretch(column, stretch)
+        group.addWidget(caption)
+        group.addWidget(control)
+        layout.addLayout(group)
+        return caption
+
+    @staticmethod
+    def page_layout(page, spacing=18):
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(40, 30, 40, 24)
+        layout.setSpacing(spacing)
+        return layout
 
     def build_studio(self):
         page = QWidget()
         page.setObjectName('page')
-        main = QVBoxLayout(page)
-        main.setContentsMargins(26, 22, 26, 18)
-        main.setSpacing(14)
-        self.advanced_button = button('گزینه‌های پردازش', self.toggle_processing_options, 'quiet', 'tune')
-        self.advanced_button.setCheckable(True)
-        main.addLayout(self.title_row('استودیوی گفتار', self.advanced_button))
+        split = QHBoxLayout(page)
+        split.setContentsMargins(0, 0, 0, 0)
+        split.setSpacing(0)
 
-        settings = QFrame()
-        settings.setObjectName('toolStrip')
-        config = QVBoxLayout(settings)
-        config.setContentsMargins(14, 12, 14, 10)
-        config.setSpacing(8)
-        fields = QGridLayout()
-        fields.setHorizontalSpacing(12)
-        fields.setVerticalSpacing(4)
+        console = QFrame()
+        console.setObjectName('console')
+        console.setFixedWidth(320)
+        column = QVBoxLayout(console)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName('consoleBody')
+        config = QVBoxLayout(body)
+        config.setContentsMargins(24, 26, 24, 16)
+        config.setSpacing(16)
         self.language = ComboBox()
         self.language.setProperty('speechSelector', True)
         self.language.setMinimumContentsLength(12)
@@ -397,97 +480,41 @@ class Studio(QMainWindow):
         self.model.setIconSize(QSize(18, 18))
         self.model.setPlaceholderText(tr('هیچ مدل نصب‌شده‌ای نیست'))
         self.model.currentIndexChanged.connect(self.selection_changed)
-        self.field(fields, 0, 'زبان گفتار', self.language, 2)
-        self.field(fields, 1, 'مدل', self.model, 3)
-        config.addLayout(fields)
+        self.field(config, 'زبان گفتار', self.language)
+        self.field(config, 'مدل', self.model)
 
-        readiness = QHBoxLayout()
-        readiness.setSpacing(8)
         self.model_notice = label('وضعیت مدل در حال بررسی است.', 'modelNotice')
-        readiness.addWidget(self.model_notice, 1)
+        config.addWidget(self.model_notice)
         self.library_button = button('دریافت مدل', self.open_selected_library, 'accent', 'download')
-        readiness.addWidget(self.library_button)
-        config.addLayout(readiness)
+        config.addWidget(self.library_button)
+        config.addWidget(rule())
+        self.advanced_button = button('گزینه‌های پردازش', self.toggle_processing_options, 'quiet', 'tune')
+        self.advanced_button.setCheckable(True)
+        config.addWidget(self.advanced_button, 0, Qt.AlignmentFlag.AlignLeading)
         self.build_processing_options(config)
-        main.addWidget(settings)
-
-        self.result_card = QFrame()
-        self.result_card.setObjectName('editorSurface')
-        result = QVBoxLayout(self.result_card)
-        result.setContentsMargins(16, 10, 16, 12)
-        result.setSpacing(10)
-        self.copy_button = button('کپی', self.copy_text, 'quiet', 'copy')
-        self.save_button = button('ذخیره متن', self.save_text, 'quiet', 'download')
-        self.retry_button = button('تبدیل دوباره', self.retry, 'quiet', 'refresh')
-        self.ai_button = button('Ask AI', self.discuss_transcript, 'accent', 'chat')
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(6)
-        toolbar.addWidget(label('Transcript', 'cardTitle'), 1)
-        for action in (self.copy_button, self.save_button, self.retry_button, self.ai_button):
-            action.setEnabled(False)
-            toolbar.addWidget(action)
-        result.addLayout(toolbar)
-
-        self.text = QTextEdit()
-        self.text.setObjectName('transcript')
-        self.text.setReadOnly(True)
-        self.text.document().setDocumentMargin(20)
-        transcript_view = QStackedWidget()
-        transcript_view.setMinimumHeight(140)
-        empty_view = QWidget()
-        empty_view.setObjectName('transcriptEmpty')
-        empty = QVBoxLayout(empty_view)
-        empty.setContentsMargins(14, 14, 14, 14)
-        empty.setSpacing(8)
-        self.transcript_glyph = QLabel()
-        self.transcript_glyph.setObjectName('emptyGlyph')
-        self.transcript_glyph.setFixedSize(60, 60)
-        self.transcript_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty.addStretch()
-        empty.addWidget(self.transcript_glyph, 0, Qt.AlignmentFlag.AlignHCenter)
-        empty.addWidget(label('No transcript yet', 'cardTitle'), 0, Qt.AlignmentFlag.AlignHCenter)
-        hint = label('برای شروع، فایل صوتی انتخاب کنید یا ضبط کنید.', 'muted')
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty.addWidget(hint)
-        empty.addStretch()
-        transcript_view.addWidget(empty_view)
-        transcript_view.addWidget(self.text)
-        self.text.textChanged.connect(
-            lambda: transcript_view.setCurrentIndex(0 if self.text.document().isEmpty() else 1))
-        result.addWidget(transcript_view, 1)
-
-        metadata = QHBoxLayout()
-        self.result_model = label('', 'muted')
-        self.result_model.setProperty('literalText', True)
-        self.metrics_label = label('', 'muted')
-        metadata.addWidget(self.result_model)
-        metadata.addStretch()
-        metadata.addWidget(self.metrics_label)
-        result.addLayout(metadata)
-        self.result_model.hide()
-        self.metrics_label.hide()
-        self.text.textChanged.connect(
-            lambda: self.result_model.setVisible(not self.text.document().isEmpty()))
-        self.text.textChanged.connect(
-            lambda: self.metrics_label.setVisible(not self.text.document().isEmpty()))
-        main.addWidget(self.result_card, 1)
+        config.addStretch()
+        settings_scroll.setWidget(body)
+        column.addWidget(settings_scroll, 1)
 
         dock = QFrame()
-        dock.setObjectName('captureDock')
+        dock.setObjectName('deck')
         dock_layout = QVBoxLayout(dock)
-        dock_layout.setContentsMargins(12, 10, 12, 10)
-        dock_layout.setSpacing(8)
-        input_row = QHBoxLayout()
-        input_row.setSpacing(8)
-        self.record_button = button('شروع ضبط', self.toggle_recording, 'primary', 'mic')
+        dock_layout.setContentsMargins(24, 18, 24, 22)
+        dock_layout.setSpacing(10)
+        self.wave = Waveform()
+        self.wave.setFixedHeight(40)
+        self.wave.hide()
+        dock_layout.addWidget(self.wave)
+        self.record_button = button('شروع ضبط', self.toggle_recording, 'record', 'mic')
+        self.record_button.setFixedHeight(52)
+        dock_layout.addWidget(self.record_button)
         self.choose_button = button('Open audio', self.choose_file, 'secondary', 'folder')
         self.choose_button.setToolTip('WAV · MP3 · M4A · OGG  ·  Ctrl+O')
-        input_row.addWidget(self.record_button)
-        input_row.addWidget(self.choose_button)
-        input_row.addStretch(1)
+        dock_layout.addWidget(self.choose_button)
+        input_row = QHBoxLayout()
+        input_row.setSpacing(6)
         self.devices = ComboBox()
-        self.devices.setMinimumContentsLength(10)
-        self.devices.setMaximumWidth(210)
+        self.devices.setMinimumContentsLength(8)
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.devices.currentTextChanged.connect(self.devices.setToolTip)
         input_row.addWidget(self.devices, 1)
@@ -496,40 +523,97 @@ class Studio(QMainWindow):
         self.refresh_button.setToolTip('بازخوانی میکروفون‌ها')
         input_row.addWidget(self.refresh_button)
         dock_layout.addLayout(input_row)
-        self.wave = Waveform()
-        self.wave.setFixedHeight(26)
-        self.wave.hide()
-        dock_layout.addWidget(self.wave)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.hide()
         dock_layout.addWidget(self.progress)
-        status_line = QHBoxLayout()
         self.status = label('آماده برای شنیدن؛ فایل یا میکروفون را انتخاب کنید.', 'muted')
-        self.source_name = label('', 'muted')
+        dock_layout.addWidget(self.status)
+        self.source_name = label('', 'meta')
         self.source_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.source_name.hide()
-        status_line.addWidget(self.status, 2)
-        status_line.addWidget(self.source_name, 1)
+        dock_layout.addWidget(self.source_name)
         self.cancel_button = button('توقف تبدیل', self.cancel, 'danger', 'stop')
         self.cancel_button.hide()
-        status_line.addWidget(self.cancel_button)
-        dock_layout.addLayout(status_line)
-        main.addWidget(dock)
+        dock_layout.addWidget(self.cancel_button)
+        column.addWidget(dock)
+        split.addWidget(console)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(page)
-        self.pages.addWidget(scroll)
+        document = QWidget()
+        document.setObjectName('page')
+        main = QVBoxLayout(document)
+        main.setContentsMargins(40, 30, 40, 22)
+        main.setSpacing(14)
+        self.copy_button = button('کپی', self.copy_text, 'quiet', 'copy')
+        self.save_button = button('ذخیره متن', self.save_text, 'quiet', 'download')
+        self.retry_button = button('تبدیل دوباره', self.retry, 'quiet', 'refresh')
+        self.ai_button = button('Ask AI', self.discuss_transcript, 'accent', 'chat')
+        self.result_model = label('', 'meta')
+        self.result_model.setProperty('literalText', True)
+        self.result_model.setWordWrap(False)
+        main.addLayout(self.title_row('استودیوی گفتار', self.result_model))
+        main.addSpacing(6)
+        caption = QHBoxLayout()
+        caption.setSpacing(4)
+        caption.addWidget(label('Transcript', 'fieldLabel'), 1)
+        for action in (self.copy_button, self.save_button, self.retry_button, self.ai_button):
+            action.setEnabled(False)
+            caption.addWidget(action)
+        main.addLayout(caption)
+        main.addWidget(rule())
+
+        self.text = QTextEdit()
+        self.text.setObjectName('transcript')
+        self.text.setReadOnly(True)
+        self.text.document().setDocumentMargin(14)
+        transcript_view = QStackedWidget()
+        transcript_view.setMinimumHeight(160)
+        empty_view = QWidget()
+        empty_view.setObjectName('transcriptEmpty')
+        empty = QVBoxLayout(empty_view)
+        empty.setContentsMargins(14, 14, 14, 14)
+        empty.setSpacing(10)
+        self.transcript_glyph = QLabel()
+        self.transcript_glyph.setObjectName('emptyGlyph')
+        self.transcript_glyph.setFixedSize(72, 72)
+        self.transcript_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addStretch()
+        empty.addWidget(self.transcript_glyph, 0, Qt.AlignmentFlag.AlignHCenter)
+        title = label('No transcript yet', 'display')
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addWidget(title)
+        hint = label('برای شروع، فایل صوتی انتخاب کنید یا ضبط کنید.', 'muted')
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addWidget(hint)
+        formats = label('WAV · MP3 · M4A · OGG  ·  Ctrl+O', 'meta')
+        formats.setProperty('literalText', True)
+        formats.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addWidget(formats)
+        empty.addStretch()
+        transcript_view.addWidget(empty_view)
+        transcript_view.addWidget(self.text)
+        self.text.textChanged.connect(
+            lambda: transcript_view.setCurrentIndex(0 if self.text.document().isEmpty() else 1))
+        main.addWidget(transcript_view, 1)
+
+        self.metrics_label = label('', 'meta')
+        main.addWidget(self.metrics_label)
+        self.result_model.hide()
+        self.metrics_label.hide()
+        self.text.textChanged.connect(
+            lambda: self.result_model.setVisible(not self.text.document().isEmpty()))
+        self.text.textChanged.connect(
+            lambda: self.metrics_label.setVisible(not self.text.document().isEmpty()))
+        split.addWidget(document, 1)
+        self.pages.addWidget(page)
 
     def build_processing_options(self, parent_layout):
         self.processing_options = QWidget()
-        grid = QGridLayout(self.processing_options)
-        grid.setContentsMargins(0, 2, 0, 0)
-        grid.setSpacing(8)
+        grid = QVBoxLayout(self.processing_options)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(14)
         self.mode = ComboBox()
         self.mode.addItem('دقت بیشتر', 5)
         self.mode.addItem('سریع‌تر', 1)
@@ -544,11 +628,11 @@ class Studio(QMainWindow):
             self.chunk_seconds.addItem(f'{seconds} s', seconds)
         index = self.chunk_seconds.findData(self.saved_settings.get('chunk_seconds', 20))
         self.chunk_seconds.setCurrentIndex(index if index >= 0 else 2)
-        self.field(grid, 0, 'حالت پردازش', self.mode)
-        self.field(grid, 1, 'دستگاه پردازش', self.compute_device)
-        self.field(grid, 2, 'مدت هر بخش صوت', self.chunk_seconds)
+        self.field(grid, 'حالت پردازش', self.mode)
+        self.field(grid, 'دستگاه پردازش', self.compute_device)
+        self.field(grid, 'مدت هر بخش صوت', self.chunk_seconds)
         self.compute_notice = label('', 'muted')
-        grid.addWidget(self.compute_notice, 2, 0, 1, 3)
+        grid.addWidget(self.compute_notice)
         self.compute_device.currentIndexChanged.connect(self.compute_choice_changed)
         self.chunk_seconds.currentIndexChanged.connect(lambda *_: self.save_settings())
         self.processing_options.hide()
@@ -557,33 +641,42 @@ class Studio(QMainWindow):
     def build_history(self):
         page = QWidget()
         page.setObjectName('page')
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(26, 22, 26, 18)
-        layout.setSpacing(14)
+        layout = self.page_layout(page)
         folder = button('پوشه متن‌ها و ضبط‌ها',
                         lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.data))),
                         'quiet', 'folder')
         reload = button('بازخوانی', self.refresh_history, 'quiet', 'refresh')
         layout.addLayout(self.title_row('تاریخچه', folder, reload))
         self.history_view = QStackedWidget()
-        empty = QFrame()
-        empty.setObjectName('editorSurface')
+        empty = QWidget()
+        empty.setObjectName('page')
         empty_layout = QVBoxLayout(empty)
+        empty_layout.setSpacing(12)
         empty_layout.addStretch()
-        empty_layout.addWidget(label('No transcripts yet', 'cardTitle'), 0, Qt.AlignmentFlag.AlignHCenter)
+        self.history_glyph = QLabel()
+        self.history_glyph.setObjectName('emptyGlyph')
+        self.history_glyph.setFixedSize(72, 72)
+        self.history_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.history_glyph, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_title = label('No transcripts yet', 'display')
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_title)
         empty_layout.addStretch()
         self.history_view.addWidget(empty)
         self.table = QTableWidget(0, 5)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignVCenter)
+        self.table.horizontalHeader().setHighlightSections(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
+        self.table.setFrameShape(QFrame.Shape.NoFrame)
         self.table.verticalHeader().hide()
         self.table.cellDoubleClicked.connect(self.load_history)
         self.history_view.addWidget(self.table)
         layout.addWidget(self.history_view, 1)
-        self.open_history_button = button('Open transcript', self.open_history_selection, 'secondary', 'file')
+        self.open_history_button = button('Open transcript', self.open_history_selection, 'primary', 'file')
         self.open_history_button.setEnabled(False)
         self.table.itemSelectionChanged.connect(
             lambda: self.open_history_button.setEnabled(self.table.currentRow() >= 0))
@@ -600,15 +693,9 @@ class Studio(QMainWindow):
     def build_settings(self):
         page = QWidget()
         page.setObjectName('page')
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(26, 22, 26, 18)
-        layout.setSpacing(16)
+        layout = self.page_layout(page, 0)
         layout.addLayout(self.title_row('Settings'))
-        preferences = QFrame()
-        preferences.setObjectName('toolStrip')
-        options = QGridLayout(preferences)
-        options.setContentsMargins(16, 12, 16, 14)
-        options.setSpacing(10)
+        layout.addSpacing(26)
         self.theme_selector = ComboBox()
         for title, key in [('هماهنگ با سیستم', 'system'), ('روشن', 'light'), ('تاریک', 'dark')]:
             self.theme_selector.addItem(title, key)
@@ -620,18 +707,46 @@ class Studio(QMainWindow):
             self.interface_language.addItem(native, code)
         self.interface_language.setCurrentIndex(self.interface_language.findData(self.ui_language))
         self.interface_language.currentIndexChanged.connect(self.interface_changed)
-        self.field(options, 0, 'ظاهر برنامه', self.theme_selector)
-        self.field(options, 1, 'زبان رابط کاربری', self.interface_language)
-        layout.addWidget(preferences)
-        updates = QFrame()
-        updates.setObjectName('toolStrip')
-        update_row = QHBoxLayout(updates)
-        update_row.setContentsMargins(16, 10, 16, 10)
-        update_row.addWidget(label('Updates', 'cardTitle'))
-        update_row.addWidget(label(self.version_text, 'muted'), 1)
-        update_row.addWidget(button('Check for updates', self.open_updates, 'secondary', 'refresh'))
-        layout.addWidget(updates)
-        layout.addWidget(button('درباره و مجوزها', self.about, 'quiet'), 0, Qt.AlignmentFlag.AlignLeading)
+        sections = QWidget()
+        sections.setObjectName('page')
+        sections.setMaximumWidth(820)
+        rows = QVBoxLayout(sections)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(0)
+
+        def setting(title, control, detail=None):
+            row = QFrame()
+            row.setObjectName('settingsRow')
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 18, 0, 18)
+            line.setSpacing(24)
+            text = QVBoxLayout()
+            text.setSpacing(4)
+            caption = label(title, 'cardTitle')
+            caption.setBuddy(control)
+            text.addWidget(caption)
+            if detail is not None:
+                text.addWidget(detail)
+            line.addLayout(text, 1)
+            control.setFixedWidth(300)
+            line.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+            rows.addWidget(row)
+
+        setting('ظاهر برنامه', self.theme_selector)
+        setting('زبان رابط کاربری', self.interface_language)
+        setting('Updates', button('Check for updates', self.open_updates, 'secondary', 'refresh'),
+                label(self.version_text, 'meta'))
+        about = QFrame()
+        about.setObjectName('settingsRow')
+        about_row = QHBoxLayout(about)
+        about_row.setContentsMargins(0, 14, 0, 0)
+        about_row.addWidget(button('درباره و مجوزها', self.about, 'link'), 0, Qt.AlignmentFlag.AlignLeading)
+        about_row.addStretch()
+        rows.addWidget(about)
+        holder = QHBoxLayout()
+        holder.addWidget(sections, 1)
+        holder.addStretch(0)
+        layout.addLayout(holder)
         layout.addStretch()
         self.pages.addWidget(page)
 
@@ -720,8 +835,9 @@ class Studio(QMainWindow):
         if not symbol:
             return
         colors = COLORS[self.resolved_theme]
-        role = {'primary': 'action_ink', 'accent': 'brand', 'link': 'brand'}.get(
-            widget.objectName(), 'muted')
+        role = ICON_ROLES.get(widget.objectName(), 'muted')
+        if widget is getattr(self, 'record_button', None) and self.recording:
+            symbol = 'stop'
         artwork = icon(symbol, colors[role])
         artwork.addPixmap(icon(symbol, colors['disabled_ink']).pixmap(32, 32), QIcon.Mode.Disabled)
         widget.setIcon(artwork)
@@ -731,23 +847,21 @@ class Studio(QMainWindow):
         colors = COLORS[self.resolved_theme]
         self.setPalette(native_palette(self.resolved_theme))
         self.setStyleSheet(theme_stylesheet(self.resolved_theme, rtl=self.ui_language in RTL_LANGUAGES))
-        self.transcript_glyph.setPixmap(icon('wave', colors['brand']).pixmap(30, 30))
-        self.wave.dark = self.resolved_theme == 'dark'
+        for glyph in (self.transcript_glyph, self.history_glyph):
+            glyph.setPixmap(icon('wave', colors['faint']).pixmap(56, 56))
+        dark = self.resolved_theme == 'dark'
+        self.wave.dark = self.tally.dark = dark
         self.wave.update()
+        self.tally.update()
         for widget in self.findChildren(LocalButton):
             self.color_action_icon(widget)
-        if self.recording:
-            self.record_button.setIcon(icon('stop', colors['danger']))
-        if self.resolved_theme == 'dark':
-            effect = self.brand_label.graphicsEffect()
-            if not isinstance(effect, QGraphicsColorizeEffect):
-                effect = QGraphicsColorizeEffect(self.brand_label)
-                self.brand_label.setGraphicsEffect(effect)
-            effect.setColor(QColor(colors['text']))
-            effect.setStrength(1.0)
-        else:
-            # Qt owns/deletes the previous effect when it is detached.
-            self.brand_label.setGraphicsEffect(None)
+        # The Signal direction renders the wordmark monochrome in ink on both themes.
+        effect = self.brand_label.graphicsEffect()
+        if not isinstance(effect, QGraphicsColorizeEffect):
+            effect = QGraphicsColorizeEffect(self.brand_label)
+            self.brand_label.setGraphicsEffect(effect)
+        effect.setColor(QColor(colors['text']))
+        effect.setStrength(1.0)
         self.setWindowIcon(QIcon(self.brand_pixmap(True)))
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'apply_theme'):
             self.ai_page.apply_theme(self.resolved_theme)
@@ -806,6 +920,11 @@ class Studio(QMainWindow):
         option.setTextDirection(direction)
         option.setAlignment(Qt.AlignmentFlag.AlignRight if direction == Qt.LayoutDirection.RightToLeft else Qt.AlignmentFlag.AlignLeft)
         self.text.document().setDefaultTextOption(option)
+        script = 'rtl' if direction == Qt.LayoutDirection.RightToLeft else 'ltr'
+        if self.text.property('script') != script:
+            self.text.setProperty('script', script)
+            self.text.style().unpolish(self.text)
+            self.text.style().polish(self.text)
 
     def language_changed(self, *args):
         if not hasattr(self, 'model_notice'):
@@ -960,18 +1079,17 @@ class Studio(QMainWindow):
     def build_library(self):
         page = QWidget()
         page.setObjectName('page')
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(26, 22, 26, 18)
-        layout.setSpacing(14)
+        layout = self.page_layout(page, 16)
         local = button('افزودن مدل محلی', self.import_local_models, 'quiet', 'folder')
         layout.addLayout(self.title_row('کتابخانه مدل‌ها', local))
         filters = QHBoxLayout()
-        filters.setSpacing(10)
+        filters.setSpacing(14)
         filter_label = label('زبان گفتار', 'fieldLabel')
+        filter_label.setWordWrap(False)
         self.library_language = ComboBox()
         self.library_language.setProperty('speechSelector', True)
         self.library_language.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.library_language.setMinimumContentsLength(14)
+        self.library_language.setMinimumContentsLength(18)
         for item in LANGUAGES:
             self.library_language.addItem(item['title'], item['code'])
         filter_label.setBuddy(self.library_language)
@@ -979,14 +1097,16 @@ class Studio(QMainWindow):
         filters.addWidget(self.library_language)
         filters.addStretch()
         layout.addLayout(filters)
+        layout.addWidget(rule())
         self.library_scroll = QScrollArea()
         self.library_scroll.setWidgetResizable(True)
+        self.library_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.library_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.library_body = QWidget()
         self.library_body.setObjectName('page')
         self.library_cards = QVBoxLayout(self.library_body)
         self.library_cards.setContentsMargins(0, 0, 4, 0)
-        self.library_cards.setSpacing(8)
+        self.library_cards.setSpacing(0)
         self.library_scroll.setWidget(self.library_body)
         layout.addWidget(self.library_scroll, 1)
         self.library_footer = label('', 'muted')
@@ -1009,14 +1129,14 @@ class Studio(QMainWindow):
             card = QFrame()
             card.setObjectName('modelCard')
             content = QVBoxLayout(card)
-            content.setContentsMargins(14, 12, 14, 12)
-            content.setSpacing(8)
+            content.setContentsMargins(2, 18, 2, 18)
+            content.setSpacing(10)
             row = QHBoxLayout()
             row.setSpacing(8)
             summary = QVBoxLayout()
-            summary.setSpacing(3)
+            summary.setSpacing(4)
             summary.addWidget(label(item['title'].replace('AZB · ', '').replace(' · چندزبانه', ''), 'libraryTitle'))
-            summary.addWidget(label(' · '.join(filter(None, (item.get('family'), item['size']))), 'muted'))
+            summary.addWidget(label(' · '.join(filter(None, (item.get('family'), item['size']))), 'meta'))
             status = label('دانلود نشده', 'modelStatus')
             status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             summary.addWidget(status)
@@ -1048,7 +1168,8 @@ class Studio(QMainWindow):
             details = QFrame()
             details.setObjectName('disclosure')
             details_layout = QVBoxLayout(details)
-            details_layout.setContentsMargins(10, 8, 10, 8)
+            details_layout.setContentsMargins(16, 12, 16, 12)
+            details_layout.setSpacing(6)
             details_layout.addWidget(label(item['detail'], 'muted'))
             details_layout.addWidget(label(f'مجوز: {item.get("license", "مشاهده در منبع")}  ·  پردازش روی CPU', 'muted'))
             if item.get('automatic_language'):
@@ -1211,6 +1332,9 @@ class Studio(QMainWindow):
         self.cancel_button.setVisible(self.busy)
         self.progress.setVisible(self.busy)
         self.wave.setVisible(self.recording)
+        self.tally.set_state('live' if self.recording else 'busy' if self.busy else 'idle')
+        self.tally.setToolTip(self.status.text())
+        self.tally.setAccessibleName(self.status.text())
         self.ai_button.setEnabled(bool(self.raw_text))
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'set_speech_settings'):
             model_text = self.model.currentText() or tr('هیچ مدل نصب‌شده‌ای نیست')
@@ -1347,7 +1471,7 @@ class Studio(QMainWindow):
         self.wave.active = True
         self.record_button.setText('آماده‌سازی میکروفون…')
         self.record_button.setObjectName('danger')
-        self.record_button.setIcon(icon('stop', COLORS[self.resolved_theme]['danger']))
+        self.color_action_icon(self.record_button)
         self.record_button.style().unpolish(self.record_button)
         self.record_button.style().polish(self.record_button)
         self.controls()
@@ -1373,8 +1497,8 @@ class Studio(QMainWindow):
         self.wave.active = False
         self.wave.update()
         self.record_button.setText('شروع ضبط')
-        self.record_button.setObjectName('primary')
-        self.record_button.setIcon(icon('mic', COLORS[self.resolved_theme]['action_ink']))
+        self.record_button.setObjectName('record')
+        self.color_action_icon(self.record_button)
         self.record_button.style().unpolish(self.record_button)
         self.record_button.style().polish(self.record_button)
         self.controls()
@@ -1497,10 +1621,10 @@ class Studio(QMainWindow):
         self.ai_button.setEnabled(True)
         self.output = path
         self.result_model.setText(metrics.get('subfolder') or metrics.get('model', ''))
-        self.metrics_label.setText(f'صوت: {metrics.get("audio_seconds",0):.1f} ثانیه   |   '
-                                   f'تشخیص: {metrics.get("inference_seconds",0):.1f} ثانیه   |   '
-                                   f'کل: {metrics.get("total_seconds",0):.1f} ثانیه   |   '
-                                   f'RAM: {metrics.get("peak_rss_mib_sampled",0):.0f} MiB   |   '
+        self.metrics_label.setText(f'صوت: {metrics.get("audio_seconds",0):.1f} ثانیه  ·  '
+                                   f'تشخیص: {metrics.get("inference_seconds",0):.1f} ثانیه  ·  '
+                                   f'کل: {metrics.get("total_seconds",0):.1f} ثانیه  ·  '
+                                   f'RAM: {metrics.get("peak_rss_mib_sampled",0):.0f} MiB  ·  '
                                    f'{str(metrics.get("device", "cpu")).upper()}')
         notes = [*metrics.get('fallback_reasons', []), *metrics.get('warnings', [])]
         self.metrics_label.setToolTip('\n'.join(str(x) for x in notes))
@@ -1560,7 +1684,7 @@ class Studio(QMainWindow):
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(value))
                 self.table.item(row, col).setToolTip(language)
-            self.table.setRowHeight(row, 48)
+            self.table.setRowHeight(row, 54)
 
     def load_history(self, row, column):
         if self.busy or self.recording:
@@ -1671,6 +1795,7 @@ def launch(audio=None, preview=None, page=None):
     app = QApplication(sys.argv)
     app.setApplicationName('Avunote')
     app.setOrganizationName('Avunote')
+    load_fonts()
     app.setFont(QFont('Segoe UI', 10))
     window = Studio()
     screen = app.primaryScreen().availableGeometry()

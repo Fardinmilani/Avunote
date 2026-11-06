@@ -17,6 +17,8 @@ New-Item -ItemType Directory -Path (Join-Path $taskRelease 'scripts') -Force | O
 Copy-Item -LiteralPath scripts/build_brand_assets.py -Destination (Join-Path $taskRelease 'scripts') -Force
 New-Item -ItemType Directory -Path (Join-Path $taskRelease 'assets') -Force | Out-Null
 Copy-Item -LiteralPath assets/avunote-logo-transparent.png, assets/avunote-mark.png, assets/avunote-brand-preview.png, assets/avunote.ico -Destination (Join-Path $taskRelease 'assets') -Force
+New-Item -ItemType Directory -Path (Join-Path $taskRelease 'assets/fonts') -Force | Out-Null
+Copy-Item -Path assets/fonts/* -Destination (Join-Path $taskRelease 'assets/fonts') -Force
 $taskNoticeArgs = @('scripts/prepare_notices.py', '--release', $taskRelease)
 if ($SourceCache) { $taskNoticeArgs += @('--source-cache', $SourceCache) }
 if ($OfflineSources) { $taskNoticeArgs += '--offline' }

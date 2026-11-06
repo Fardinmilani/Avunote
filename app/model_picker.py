@@ -27,30 +27,32 @@ class ModelChoice:
 
 _STYLE = Template("""
 QFrame#modelPickerPopup {
-    background: $surface; border: 1px solid $outline; border-radius: 10px;
+    background: $surface; border: 1px solid $line_strong; border-radius: 12px;
 }
 QWidget#modelPickerContent {background: $surface;}
-QFrame#modelPickerRow {background: $surface; border: 0;}
+QFrame#modelPickerRow {background: $surface; border: 0; border-bottom: 1px solid $line;}
 QLabel#modelChoiceTitle {color: $text; font-size: 14px; font-weight: 600;}
-QLabel#modelChoiceStatus {color: $muted; font-size: 12px;}
+QLabel#modelChoiceStatus {color: $faint; font-size: 12px;}
 QPushButton#modelChoiceSelect {
     background: $surface; border: 1px solid transparent; border-radius: 8px;
-    color: $text; text-align: $alignment; padding: 9px; font-weight: 600;
+    color: $text; text-align: $alignment; padding: 9px 12px; font-weight: 600;
 }
-QPushButton#modelChoiceSelect:checked {background: $brand_soft; color: $brand;}
+QPushButton#modelChoiceSelect:checked {
+    background: $rail; color: $text; border-radius: 0; border-$start: 2px solid $signal;
+}
 QPushButton#modelChoiceSelect:hover {background: $hover;}
 QToolButton#modelDownloadAction {
-    background: $brand_soft; border: 1px solid $line; border-radius: 8px; padding: 0;
+    background: transparent; border: 1px solid $signal; border-radius: 22px; padding: 0;
 }
-QToolButton#modelDownloadAction:hover {background: $hover; border-color: $brand;}
+QToolButton#modelDownloadAction:hover {background: $brand_soft;}
 QToolButton#modelDownloadAction:disabled {background: $disabled; border-color: $line;}
 QToolButton#modelDownloadAction:focus, QPushButton#modelChoiceSelect:focus {
     border: 2px solid $focus;
 }
 QProgressBar#modelChoiceProgress {
-    background: $line; border: 0; border-radius: 2px; min-height: 4px; max-height: 4px;
+    background: $line; border: 0; border-radius: 0; min-height: 3px; max-height: 3px;
 }
-QProgressBar#modelChoiceProgress::chunk {background: $brand; border-radius: 2px;}
+QProgressBar#modelChoiceProgress::chunk {background: $signal; border-radius: 0;}
 """)
 
 
@@ -199,7 +201,8 @@ class _ModelPopup(QFrame):
         self.setAccessibleName(self.combo.accessibleName())
         style_key = (theme, rtl)
         if style_key != self.style_key:
-            self.setStyleSheet(_STYLE.substitute(COLORS[theme], alignment='right' if rtl else 'left'))
+            self.setStyleSheet(_STYLE.substitute(COLORS[theme], alignment='right' if rtl else 'left',
+                                                 start='right' if rtl else 'left'))
             self.style_key = style_key
         if tuple(self.rows) != tuple(choice.key for choice in choices):
             for row in self.rows.values():

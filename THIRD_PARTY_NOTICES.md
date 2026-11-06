@@ -73,6 +73,10 @@ the exact Windows x64 DLL before creating Setup. [ONNX Runtime MIT license](lice
 and [Microsoft third-party notices](licenses/ONNXRuntime-1.28.2/ThirdPartyNotices.txt)
 are included alongside the [Sherpa-ONNX and native component notices](licenses/Sherpa-ONNX-2.0.1).
 
+## Vazirmatn font
+
+The interface bundles the Regular, Medium, SemiBold and Bold static TTF files of [Vazirmatn](https://github.com/rastikerdar/vazirmatn) v33.003 for Persian and Arabic text. Copyright 2015 The Vazirmatn Project Authors. The fonts are unmodified and licensed under the SIL Open Font License 1.1; the license text is kept beside them in [`assets/fonts/Vazirmatn-OFL.txt`](assets/fonts/Vazirmatn-OFL.txt).
+
 ## Qt / PySide6 / Shiboken
 
 PySide6, Shiboken and the distributed Qt modules are used as dynamically loaded, separate libraries under LGPLv3 or the applicable upstream license option. Preserve the exact release's license/copyright files and corresponding source archives with binary distributions. The intended release uses Qt/PySide 6.12.0; archives for Qt Base, Qt SVG, Qt Image Formats and PySide/Shiboken must match the shipped components. Add matching sources for any additional Qt modules shipped later.

@@ -12,7 +12,8 @@ def icon(kind, color=None):
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(QColor(color), 2.3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.setPen(QPen(QColor(color), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                        Qt.PenJoinStyle.RoundJoin))
     if kind == 'mic':
         painter.drawRoundedRect(12, 4, 8, 16, 4, 4)
         painter.drawArc(7, 8, 18, 18, 180*16, 180*16)
