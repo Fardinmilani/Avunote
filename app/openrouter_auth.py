@@ -14,8 +14,9 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from PySide6.QtCore import QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QProgressBar, QVBoxLayout
+from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QInputDialog, QLabel, QLineEdit, QProgressBar,
+                               QVBoxLayout)
 import requests
 
 from ai_clients import AIError, OPENROUTER_BASE_URL, OPENROUTER_FREE_MODEL
@@ -104,8 +105,135 @@ _COPY = {
 }
 
 
+# Unreachable, rejected (HTTP {}), slow reply, browser did not open, copy link, link copied,
+# use API key, API key prompt, invalid API key.
+_MORE = {
+    'en': (
+        'Could not reach OpenRouter. Check your internet connection, VPN or proxy, then try again.',
+        'OpenRouter did not accept the sign-in (HTTP {}). Try again and approve the request in your browser.',
+        'OpenRouter did not respond in time. Check your internet connection, VPN or proxy, then try again.',
+        'Could not open your browser. Copy the sign-in link and open it in your browser.',
+        'Copy sign-in link', 'Sign-in link copied. Paste it into your browser’s address bar.',
+        'Use an API key…', 'Paste your OpenRouter API key (it starts with sk-or-):',
+        'That is not an OpenRouter API key. It should start with sk-or-.',
+    ),
+    'fa': (
+        'دسترسی به OpenRouter ممکن نشد. اتصال اینترنت، VPN یا پراکسی را بررسی کنید و دوباره تلاش کنید.',
+        'OpenRouter ورود را نپذیرفت (HTTP {}). دوباره تلاش کنید و درخواست را در مرورگر تأیید کنید.',
+        'OpenRouter به‌موقع پاسخ نداد. اتصال اینترنت، VPN یا پراکسی را بررسی کنید و دوباره تلاش کنید.',
+        'مرورگر باز نشد. پیوند ورود را کپی کنید و در مرورگر باز کنید.',
+        'کپی پیوند ورود', 'پیوند ورود کپی شد. آن را در نوار نشانی مرورگر بچسبانید.',
+        'استفاده از کلید API…', 'کلید API سرویس OpenRouter را بچسبانید (با sk-or- شروع می‌شود):',
+        'این کلید API سرویس OpenRouter نیست. باید با sk-or- شروع شود.',
+    ),
+    'tr': (
+        'OpenRouter’a ulaşılamadı. İnternet bağlantınızı, VPN’inizi veya proxy ayarınızı kontrol edip tekrar deneyin.',
+        'OpenRouter oturum açmayı kabul etmedi (HTTP {}). Tekrar deneyin ve isteği tarayıcıda onaylayın.',
+        'OpenRouter zamanında yanıt vermedi. İnternet bağlantınızı, VPN’inizi veya proxy ayarınızı kontrol edip tekrar deneyin.',
+        'Tarayıcı açılamadı. Oturum açma bağlantısını kopyalayıp tarayıcınızda açın.',
+        'Bağlantıyı kopyala', 'Bağlantı kopyalandı. Tarayıcınızın adres çubuğuna yapıştırın.',
+        'API anahtarı kullan…', 'OpenRouter API anahtarınızı yapıştırın (sk-or- ile başlar):',
+        'Bu bir OpenRouter API anahtarı değil. sk-or- ile başlamalıdır.',
+    ),
+    'ar': (
+        'تعذّر الوصول إلى OpenRouter. تحقّق من اتصال الإنترنت أو VPN أو الوكيل، ثم حاول مجددًا.',
+        'لم يقبل OpenRouter تسجيل الدخول (HTTP {}). حاول مجددًا ووافق على الطلب في المتصفح.',
+        'لم يستجب OpenRouter في الوقت المحدد. تحقّق من اتصال الإنترنت أو VPN أو الوكيل، ثم حاول مجددًا.',
+        'تعذّر فتح المتصفح. انسخ رابط تسجيل الدخول وافتحه في المتصفح.',
+        'نسخ رابط تسجيل الدخول', 'تم نسخ الرابط. الصقه في شريط العنوان في المتصفح.',
+        'استخدام مفتاح API…', 'الصق مفتاح OpenRouter API (يبدأ بـ sk-or-):',
+        'هذا ليس مفتاح OpenRouter API. يجب أن يبدأ بـ sk-or-.',
+    ),
+    'az': (
+        'OpenRouter-a qoşulmaq mümkün olmadı. İnternet bağlantısını, VPN və ya proksini yoxlayıb yenidən cəhd edin.',
+        'OpenRouter girişi qəbul etmədi (HTTP {}). Yenidən cəhd edin və sorğunu brauzerdə təsdiqləyin.',
+        'OpenRouter vaxtında cavab vermədi. İnternet bağlantısını, VPN və ya proksini yoxlayıb yenidən cəhd edin.',
+        'Brauzer açılmadı. Giriş keçidini kopyalayıb brauzerdə açın.',
+        'Giriş keçidini kopyala', 'Keçid kopyalandı. Onu brauzerin ünvan sətrinə yapışdırın.',
+        'API açarı istifadə et…', 'OpenRouter API açarınızı yapışdırın (sk-or- ilə başlayır):',
+        'Bu OpenRouter API açarı deyil. sk-or- ilə başlamalıdır.',
+    ),
+    'es': (
+        'No se pudo conectar con OpenRouter. Comprueba tu conexión a Internet, VPN o proxy e inténtalo de nuevo.',
+        'OpenRouter no aceptó el inicio de sesión (HTTP {}). Inténtalo de nuevo y aprueba la solicitud en el navegador.',
+        'OpenRouter no respondió a tiempo. Comprueba tu conexión a Internet, VPN o proxy e inténtalo de nuevo.',
+        'No se pudo abrir el navegador. Copia el enlace de inicio de sesión y ábrelo en tu navegador.',
+        'Copiar enlace', 'Enlace copiado. Pégalo en la barra de direcciones del navegador.',
+        'Usar una clave de API…', 'Pega tu clave de API de OpenRouter (empieza por sk-or-):',
+        'No es una clave de API de OpenRouter. Debe empezar por sk-or-.',
+    ),
+    'fr': (
+        'Impossible de joindre OpenRouter. Vérifiez votre connexion Internet, votre VPN ou votre proxy, puis réessayez.',
+        'OpenRouter a refusé la connexion (HTTP {}). Réessayez et approuvez la demande dans votre navigateur.',
+        'OpenRouter n’a pas répondu à temps. Vérifiez votre connexion Internet, votre VPN ou votre proxy, puis réessayez.',
+        'Impossible d’ouvrir le navigateur. Copiez le lien de connexion et ouvrez-le dans votre navigateur.',
+        'Copier le lien', 'Lien copié. Collez-le dans la barre d’adresse de votre navigateur.',
+        'Utiliser une clé API…', 'Collez votre clé API OpenRouter (elle commence par sk-or-) :',
+        'Ce n’est pas une clé API OpenRouter. Elle doit commencer par sk-or-.',
+    ),
+    'de': (
+        'OpenRouter ist nicht erreichbar. Prüfen Sie Ihre Internetverbindung, Ihr VPN oder Ihren Proxy und versuchen Sie es erneut.',
+        'OpenRouter hat die Anmeldung nicht akzeptiert (HTTP {}). Versuchen Sie es erneut und bestätigen Sie die Anfrage im Browser.',
+        'OpenRouter hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung, Ihr VPN oder Ihren Proxy und versuchen Sie es erneut.',
+        'Der Browser konnte nicht geöffnet werden. Kopieren Sie den Anmeldelink und öffnen Sie ihn im Browser.',
+        'Link kopieren', 'Link kopiert. Fügen Sie ihn in die Adressleiste Ihres Browsers ein.',
+        'API-Schlüssel verwenden…', 'Fügen Sie Ihren OpenRouter-API-Schlüssel ein (beginnt mit sk-or-):',
+        'Das ist kein OpenRouter-API-Schlüssel. Er muss mit sk-or- beginnen.',
+    ),
+    'pt': (
+        'Não foi possível acessar o OpenRouter. Confira sua conexão com a internet, VPN ou proxy e tente novamente.',
+        'O OpenRouter não aceitou o login (HTTP {}). Tente novamente e aprove a solicitação no navegador.',
+        'O OpenRouter não respondeu a tempo. Confira sua conexão com a internet, VPN ou proxy e tente novamente.',
+        'Não foi possível abrir o navegador. Copie o link de login e abra-o no navegador.',
+        'Copiar link', 'Link copiado. Cole-o na barra de endereços do navegador.',
+        'Usar uma chave de API…', 'Cole sua chave de API do OpenRouter (começa com sk-or-):',
+        'Esta não é uma chave de API do OpenRouter. Ela deve começar com sk-or-.',
+    ),
+    'ru': (
+        'Не удалось подключиться к OpenRouter. Проверьте подключение к интернету, VPN или прокси и попробуйте снова.',
+        'OpenRouter не принял вход (HTTP {}). Попробуйте снова и подтвердите запрос в браузере.',
+        'OpenRouter не ответил вовремя. Проверьте подключение к интернету, VPN или прокси и попробуйте снова.',
+        'Не удалось открыть браузер. Скопируйте ссылку для входа и откройте её в браузере.',
+        'Копировать ссылку', 'Ссылка скопирована. Вставьте её в адресную строку браузера.',
+        'Использовать API-ключ…', 'Вставьте API-ключ OpenRouter (начинается с sk-or-):',
+        'Это не API-ключ OpenRouter. Он должен начинаться с sk-or-.',
+    ),
+    'zh': (
+        '无法连接 OpenRouter。请检查网络连接、VPN 或代理后重试。',
+        'OpenRouter 未接受此次登录（HTTP {}）。请重试，并在浏览器中批准请求。',
+        'OpenRouter 未及时响应。请检查网络连接、VPN 或代理后重试。',
+        '无法打开浏览器。请复制登录链接并在浏览器中打开。',
+        '复制登录链接', '链接已复制。请粘贴到浏览器地址栏。',
+        '使用 API 密钥…', '粘贴你的 OpenRouter API 密钥（以 sk-or- 开头）：',
+        '这不是 OpenRouter API 密钥，应以 sk-or- 开头。',
+    ),
+    'ja': (
+        'OpenRouter に接続できません。インターネット接続、VPN、またはプロキシを確認して、もう一度お試しください。',
+        'OpenRouter がログインを受け付けませんでした（HTTP {}）。もう一度お試しのうえ、ブラウザーで要求を承認してください。',
+        'OpenRouter から時間内に応答がありませんでした。インターネット接続、VPN、またはプロキシを確認して、もう一度お試しください。',
+        'ブラウザーを開けませんでした。ログインリンクをコピーしてブラウザーで開いてください。',
+        'ログインリンクをコピー', 'リンクをコピーしました。ブラウザーのアドレスバーに貼り付けてください。',
+        'API キーを使う…', 'OpenRouter の API キーを貼り付けてください（sk-or- で始まります）：',
+        'OpenRouter の API キーではありません。sk-or- で始まる必要があります。',
+    ),
+}
+
+_SIGN_IN_TIMEOUT = 180
+_EXCHANGE_TIMEOUT = 45
+
+
 class AuthError(Exception):
-    """An authorization failure safe to show without provider details."""
+    """An authorization failure safe to show without provider details.
+
+    kind is 'network', 'slow', 'rejected' or 'invalid'; retryable marks failures
+    where the single-use code was most likely never delivered.
+    """
+
+    def __init__(self, kind='invalid', status=None, retryable=False):
+        super().__init__(kind)
+        self.kind = kind
+        self.status = status
+        self.retryable = retryable
 
 
 def _bounded_token(value):
@@ -118,15 +246,19 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, status, text):
-        body = ('<!doctype html><meta charset="utf-8"><title>Avunote</title>'
-                f'<h1>Avunote</h1><p>{escape(text)}</p>').encode('utf-8')
+        body = ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+                '<title>Avunote</title><style>body{font:16px/1.5 "Segoe UI",system-ui,sans-serif;'
+                'background:#f6f6f4;color:#1c1c1c;display:grid;place-items:center;min-height:90vh;margin:0}'
+                'main{background:#fff;border:1px solid #e2e2de;border-radius:12px;padding:28px 36px;'
+                'max-width:420px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{margin:0}</style>'
+                f'<main><h1>Avunote</h1><p dir="auto">{escape(text)}</p></main>').encode('utf-8')
         try:
             self.send_response(status)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('Referrer-Policy', 'no-referrer')
-            self.send_header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.end_headers()
             self.wfile.write(body)
@@ -205,7 +337,7 @@ class _LoopbackCallback(HTTPServer):
             'state': self.state, 'key_label': 'Avunote',
         })
 
-    def wait_for_code(self, cancelled, timeout=180):
+    def wait_for_code(self, cancelled, timeout=_SIGN_IN_TIMEOUT):
         deadline = monotonic() + timeout
         while not cancelled.is_set() and monotonic() < deadline:
             self.handle_request()
@@ -217,19 +349,26 @@ class _LoopbackCallback(HTTPServer):
         raise TimeoutError
 
 
-def _exchange_code(code, verifier, cancelled):
-    if cancelled.is_set():
-        return None
+def _system_proxy_configured():
+    try:
+        return bool(requests.utils.get_environ_proxies(_KEY_URL))
+    except Exception:
+        return False
+
+
+def _request_key(code, verifier, cancelled, use_system_proxy):
     try:
         with requests.Session() as session:
-            session.trust_env = False
+            # Same proxy policy as remote chat requests: the browser that approved
+            # the sign-in usually reaches OpenRouter through the system proxy/VPN.
+            session.trust_env = use_system_proxy
             with session.post(
                 _KEY_URL, json={'code': code, 'code_verifier': verifier, 'code_challenge_method': 'S256'},
-                headers={'Accept': 'application/json'}, timeout=(8, 12),
+                headers={'Accept': 'application/json'}, timeout=(8, 15),
                 allow_redirects=False, stream=True,
             ) as response:
                 if response.status_code != 200:
-                    raise AuthError
+                    raise AuthError('rejected', response.status_code)
                 raw = bytearray()
                 for chunk in response.iter_content(chunk_size=8192):
                     if cancelled.is_set():
@@ -239,14 +378,36 @@ def _exchange_code(code, verifier, cancelled):
                         raise AuthError
         data = json.loads(raw)
         key = data.get('key') if isinstance(data, dict) else None
-    except (requests.RequestException, ValueError, RecursionError):
+    except requests.ConnectionError:
+        raise AuthError('network', retryable=True) from None
+    except requests.Timeout:
+        raise AuthError('slow') from None
+    except requests.RequestException:
+        raise AuthError('network') from None
+    except (ValueError, RecursionError):
         raise AuthError from None
     if not _bounded_token(key) or len(key) < 16:
         raise AuthError
     return key
 
 
+def _exchange_code(code, verifier, cancelled):
+    if cancelled.is_set():
+        return None
+    # A dead or misconfigured system proxy should not block sign-in when OpenRouter
+    # is reachable directly, so connection failures through the proxy retry once.
+    modes = (True, False) if _system_proxy_configured() else (True,)
+    for index, use_system_proxy in enumerate(modes):
+        try:
+            return _request_key(code, verifier, cancelled, use_system_proxy)
+        except AuthError as error:
+            if not error.retryable or index == len(modes) - 1 or cancelled.is_set():
+                raise
+    return None
+
+
 def _authorize(listener, cancelled, results):
+    # Every exit path reports to the dialog so it can never wait on a silent thread.
     try:
         with listener:
             code = listener.wait_for_code(cancelled)
@@ -257,7 +418,9 @@ def _authorize(listener, cancelled, results):
                 results.put(('connected', key))
     except TimeoutError:
         results.put(('timeout', None))
-    except (AuthError, OSError):
+    except AuthError as error:
+        results.put(('failed', error))
+    except Exception:
         results.put(('failed', None))
 
 
@@ -274,6 +437,7 @@ class _ConnectDialog(QDialog):
         super().__init__(parent)
         locale = current_language()
         self.copy = _COPY.get(locale, _COPY['en'])
+        self.more = _MORE.get(locale, _MORE['en'])
         if locale in RTL_LANGUAGES:
             self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setWindowTitle(self.copy[0])
@@ -281,6 +445,10 @@ class _ConnectDialog(QDialog):
         self.profile_id = None
         self.cancelled = Event()
         self.results = SimpleQueue()
+        self.worker = None
+        self.auth_url = ''
+        self.deadline = 0.0
+        self.exchanging = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 14)
         layout.setSpacing(12)
@@ -301,6 +469,11 @@ class _ConnectDialog(QDialog):
         self.retry = actions.addButton(self.copy[4], QDialogButtonBox.ButtonRole.ActionRole)
         self.retry.clicked.connect(self.start)
         self.retry.hide()
+        self.copy_link = actions.addButton(self.more[4], QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_link.clicked.connect(self.copy_sign_in_link)
+        self.copy_link.hide()
+        self.manual_key = actions.addButton(self.more[6], QDialogButtonBox.ButtonRole.ActionRole)
+        self.manual_key.clicked.connect(self.use_api_key)
         layout.addWidget(actions)
         self.poll = QTimer(self)
         self.poll.timeout.connect(self.consume_result)
@@ -309,50 +482,109 @@ class _ConnectDialog(QDialog):
     def start(self):
         if not self.isVisible():
             return
+        self.cancelled.set()
         self.retry.hide()
+        self.copy_link.hide()
         self.progress.show()
         self.status.setText(self.copy[2])
         self.cancelled = Event()
         self.results = SimpleQueue()
+        self.exchanging = False
         try:
             listener = _LoopbackCallback(self.copy[8])
         except OSError:
             self.show_failure(self.copy[6])
             return
-        if not QDesktopServices.openUrl(QUrl(listener.authorization_url())):
-            listener.server_close()
-            self.show_failure(self.copy[6])
-            return
+        self.auth_url = listener.authorization_url()
         try:
-            Thread(target=_authorize, args=(listener, self.cancelled, self.results),
-                   name='openrouter-sign-in', daemon=True).start()
+            self.worker = Thread(target=_authorize, args=(listener, self.cancelled, self.results),
+                                 name='openrouter-sign-in', daemon=True)
+            self.worker.start()
         except RuntimeError:
             listener.server_close()
             self.show_failure(self.copy[6])
             return
+        self.deadline = monotonic() + _SIGN_IN_TIMEOUT + 10
         self.poll.start(80)
+        self.copy_link.show()
+        # The callback server is already listening, so a manually opened link still works.
+        if not QDesktopServices.openUrl(QUrl(self.auth_url)):
+            self.status.setText(self.more[3])
 
-    def consume_result(self):
-        try:
-            result, key = self.results.get_nowait()
-        except Empty:
+    def copy_sign_in_link(self):
+        if self.auth_url and self.poll.isActive():
+            QGuiApplication.clipboard().setText(self.auth_url)
+            self.status.setText(self.more[5])
+
+    def use_api_key(self):
+        key, accepted = QInputDialog.getText(self, self.copy[0], self.more[7], QLineEdit.EchoMode.Password)
+        if not accepted:
             return
+        key = key.strip()
+        if not (key.startswith('sk-or-') and _bounded_token(key) and len(key) >= 16):
+            self.cancelled.set()
+            self.show_failure(self.more[8])
+            return
+        self.cancelled.set()
+        self.save_and_finish(key)
+
+    def save_and_finish(self, key):
+        try:
+            self.profile_id = _save_connection(key)
+        except AIError as error:
+            self.show_failure(str(error) or self.copy[6])
+        except Exception:
+            self.show_failure(self.copy[6])
+        else:
+            self.accept()
+
+    def failure_message(self, error):
+        if isinstance(error, AuthError):
+            if error.kind == 'network':
+                return self.more[0]
+            if error.kind == 'slow':
+                return self.more[2]
+            if error.kind == 'rejected':
+                return self.more[1].format(error.status)
+        return self.copy[6]
+
+    def handle_result(self, result, value):
         if result == 'connecting':
             self.status.setText(self.copy[3])
+            self.copy_link.hide()
+            self.exchanging = True
+            self.deadline = monotonic() + _EXCHANGE_TIMEOUT
         elif result == 'connected':
-            try:
-                self.profile_id = _save_connection(key)
-            except (AIError, OSError):
-                self.show_failure(self.copy[6])
-            else:
-                self.accept()
+            self.poll.stop()
+            self.save_and_finish(value)
+        elif result == 'timeout':
+            self.show_failure(self.copy[7])
         else:
-            self.show_failure(self.copy[7 if result == 'timeout' else 6])
+            self.show_failure(self.failure_message(value))
+
+    def consume_result(self):
+        # Read liveness first: a worker that exits after queueing its last result
+        # must not be mistaken for one that died without reporting.
+        worker_done = self.worker is None or not self.worker.is_alive()
+        while self.poll.isActive():
+            try:
+                result, value = self.results.get_nowait()
+            except Empty:
+                break
+            self.handle_result(result, value)
+        if not self.poll.isActive():
+            return
+        if worker_done:
+            self.show_failure(self.copy[6])
+        elif monotonic() > self.deadline:
+            self.cancelled.set()
+            self.show_failure(self.more[2] if self.exchanging else self.copy[7])
 
     def show_failure(self, message):
         self.poll.stop()
         self.status.setText(message)
         self.progress.hide()
+        self.copy_link.hide()
         self.retry.show()
 
     def done(self, result):
