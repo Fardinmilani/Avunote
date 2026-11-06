@@ -33,6 +33,7 @@ class Session:
         result = self.results.pop(0)
         if isinstance(result, Exception): raise result
         return result
+    get = post
 
 
 def profile(provider='gemini', **values):
@@ -60,6 +61,49 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(request['json']['systemInstruction']['parts'][0]['text'], 'Help with this text.')
         self.assertFalse(request['allow_redirects'])
         self.assertEqual(request['json']['generationConfig']['maxOutputTokens'], ai.DEFAULT_OUTPUT_TOKENS)
+
+    def test_list_models_gemini_filters_chat_capable_and_keeps_key_in_header(self):
+        session = self.client(Response({'models': [
+            {'name': 'models/gemini-2.5-flash', 'supportedGenerationMethods': ['generateContent']},
+            {'name': 'models/text-embedding-004', 'supportedGenerationMethods': ['embedContent']},
+            {'name': 'models/gemini-2.5-pro', 'supportedGenerationMethods': ['generateContent', 'countTokens']}]}))
+        self.assertEqual(ai.list_models(profile()), ['gemini-2.5-flash', 'gemini-2.5-pro'])
+        url, request = session.calls[0]
+        self.assertTrue(url.startswith('https://generativelanguage.googleapis.com/v1beta/models'))
+        self.assertNotIn('secret-test-key', url)
+        self.assertEqual(request['headers']['x-goog-api-key'], 'secret-test-key-12345')
+        self.assertNotIn('json', request)
+        self.assertFalse(request['allow_redirects'])
+
+    def test_list_models_openai_compatible_and_ollama_cloud_filter(self):
+        session = self.client(Response({'data': [{'id': 'b-model'}, {'id': 'a-model'}, {'id': 'a-model'}, {'nope': 1}]}))
+        p = profile('openai-compatible', base_url='http://127.0.0.1:1234/v1/chat/completions')
+        self.assertEqual(ai.list_models(p), ['a-model', 'b-model'])
+        self.assertEqual(session.calls[0][0], 'http://127.0.0.1:1234/v1/models')
+        self.assertFalse(session.trust_env)
+        session = self.client(Response({'models': [{'name': 'qwen3:4b'}, {'name': 'gpt-oss:120b-cloud'}]}))
+        self.assertEqual(ai.list_models(profile('ollama', key='', model='qwen3:4b')), ['qwen3:4b'])
+        self.assertEqual(session.calls[0][0], 'http://127.0.0.1:11434/api/tags')
+        self.assertNotIn('Authorization', session.calls[0][1]['headers'])
+
+    def test_list_models_openrouter_keeps_free_models_only(self):
+        self.client(Response({'data': [{'id': 'meta-llama/llama-3.3-70b-instruct:free'}, {'id': 'openai/gpt-4o'},
+                                       {'id': 'openrouter/auto'}]}))
+        p = profile('openrouter', base_url=ai.OPENROUTER_BASE_URL, model=ai.OPENROUTER_FREE_MODEL)
+        self.assertEqual(ai.list_models(p), [ai.OPENROUTER_FREE_MODEL, 'meta-llama/llama-3.3-70b-instruct:free'])
+        self.assertTrue(ai.validate_profile({**p, 'model': 'qwen/qwen3-8b:free'}))
+        with self.assertRaises(ai.AIError): ai.validate_profile({**p, 'model': 'openai/gpt-4o'})
+
+    def test_list_models_errors_are_safe(self):
+        self.client(Response({'error': 'secret-test-key-12345 bad'}, status=401))
+        with self.assertRaises(ai.AIError) as caught: ai.list_models(profile())
+        self.assertIn('HTTP 401', str(caught.exception))
+        self.assertNotIn('secret-test-key', str(caught.exception))
+        self.client(Response(raw=b'not json'))
+        with self.assertRaises(ai.AIError): ai.list_models(profile())
+        self.client(requests.ConnectionError('secret-test-key-12345'))
+        with self.assertRaises(ai.AIError) as caught: ai.list_models(profile())
+        self.assertNotIn('secret-test-key', str(caught.exception))
 
     def test_local_openai_compatible_and_proxy_bypass(self):
         session = self.client(Response({'choices':[{'message':{'content':'local answer'}}]}))

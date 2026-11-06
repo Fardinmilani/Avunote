@@ -191,10 +191,10 @@ QPushButton#quiet:checked {background: $surface; color: $text; border-color: $li
 QPushButton#nav {
     background: transparent; color: $muted; border: 0; border-radius: 0;
     border-bottom: 2px solid transparent; border-top: 2px solid transparent;
-    padding: 0 2px; margin: 0 10px; font-weight: 500;
+    padding: 0 10px; margin: 0 2px; font-weight: 600;
 }
 QPushButton#nav:hover {color: $text;}
-QPushButton#nav:checked {color: $text; border-bottom-color: $signal; font-weight: 600;}
+QPushButton#nav:checked {color: $text; border-bottom-color: $signal;}
 QPushButton:disabled, QPushButton#primary:disabled, QPushButton#record:disabled,
 QPushButton#accent:disabled, QPushButton#danger:disabled, QToolButton:disabled {
     background: $disabled; color: $disabled_ink; border-color: $line;
@@ -231,6 +231,9 @@ QComboBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled {
 }
 QLineEdit, QPlainTextEdit {padding: 8px 12px;}
 QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus {border-bottom: 2px solid $focus;}
+QComboBox QLineEdit, QComboBox QLineEdit:focus, QComboBox QLineEdit:hover, QComboBox QLineEdit:disabled {
+    background: transparent; border: 0; padding: 0; min-height: 0;
+}
 QListWidget:focus, QTextBrowser:focus, QTableWidget:focus {border: 1px solid $focus;}
 QCheckBox {spacing: 10px; padding: 4px 0;}
 QCheckBox::indicator {width: 18px; height: 18px;}

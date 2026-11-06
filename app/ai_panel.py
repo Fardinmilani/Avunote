@@ -15,8 +15,9 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
     QSplitter, QFileDialog, QSizePolicy, QMenu, QStackedWidget)
 from model_catalog import data_root
 from ui_i18n import RTL_LANGUAGES, current_language, tr
-from ai_profiles import list_profiles, save_profile, get_profile, delete_profile, persistent_keys_available
-from ai_clients import chat, is_local_url, AICancelled
+from ai_profiles import (list_profiles, save_profile, get_profile, delete_profile, persistent_keys_available,
+                         set_profile_model)
+from ai_clients import chat, is_local_url, list_models, AICancelled
 from atomic_files import atomic_write_text, read_text_shared
 from studio_theme import COLORS, ChevronComboBox, font_roles
 from studio_icons import icon
@@ -154,6 +155,14 @@ TEXT.update({
  'Conversation exported.': ('خروجی گفت‌وگو ذخیره شد.','Sohbet dışa aktarıldı.','صُدّرت المحادثة.','Söhbət ixrac edildi.'),
  'The conversation could not be exported.': ('ذخیره خروجی گفت‌وگو انجام نشد.','Sohbet dışa aktarılamadı.','تعذر تصدير المحادثة.','Söhbəti ixrac etmək alınmadı.'),
  'The conversation could not be deleted.': ('حذف گفت‌وگو انجام نشد.','Sohbet silinemedi.','تعذر حذف المحادثة.','Söhbəti silmək alınmadı.'),
+ 'AI model': ('مدل هوش مصنوعی','Yapay zekâ modeli','نموذج الذكاء الاصطناعي','Süni intellekt modeli'),
+ 'Refresh model list': ('به‌روزرسانی فهرست مدل‌ها','Model listesini yenile','تحديث قائمة النماذج','Model siyahısını yenilə'),
+ 'Connect an AI to choose a model': ('برای انتخاب مدل، ابتدا به یک AI متصل شوید','Model seçmek için bir yapay zekâya bağlanın','اتصل بذكاء اصطناعي لاختيار نموذج','Model seçmək üçün süni intellektə qoşulun'),
+ 'Type a model ID or refresh the list': ('شناسه مدل را بنویسید یا فهرست را به‌روز کنید','Model kimliği yazın veya listeyi yenileyin','اكتب معرّف النموذج أو حدّث القائمة','Model identifikatorunu yazın və ya siyahını yeniləyin'),
+ 'Loading models…': ('در حال دریافت فهرست مدل‌ها…','Modeller yükleniyor…','جارٍ تحميل النماذج…','Modellər yüklənir…'),
+ '{count} models available.': ('{count} مدل در دسترس است.','{count} model kullanılabilir.','{count} نموذجًا متاحًا.','{count} model mövcuddur.'),
+ 'Chat model set to {model}.': ('مدل گفت‌وگو: {model}','Sohbet modeli: {model}','نموذج المحادثة: {model}','Söhbət modeli: {model}'),
+ 'Only your API key is sent to list models; no conversation text.': ('برای دریافت فهرست مدل‌ها فقط کلید API ارسال می‌شود، نه متن گفت‌وگو.','Model listesi için yalnızca API anahtarı gönderilir; sohbet metni gönderilmez.','لجلب قائمة النماذج يُرسل مفتاح API فقط دون نص المحادثة.','Model siyahısı üçün yalnız API açarı göndərilir, söhbət mətni yox.'),
  'Your messages are saved on this device automatically.': ('پیام‌ها و پیش‌نویس‌ها خودکار روی همین دستگاه ذخیره می‌شوند.','Mesajlar ve taslaklar bu cihazda otomatik kaydedilir.','تُحفظ الرسائل والمسودات تلقائيًا على هذا الجهاز.','Mesajlar və qaralamalar bu cihazda avtomatik saxlanır.'),
  'Finish the current voice input before switching conversations.': ('پیش از تغییر گفت‌وگو، ورودی ویس فعلی را تمام کنید.','Sohbet değiştirmeden önce ses girişini bitirin.','أنه إدخال الصوت قبل تغيير المحادثة.','Söhbəti dəyişməzdən əvvəl səs girişini bitirin.'),
 })
@@ -189,6 +198,16 @@ class ChatWorker(QThread):
             if not self.cancel_event.is_set():self.reply.emit(result)
             else:self.cancelled.emit()
         except AICancelled:self.cancelled.emit()
+        except Exception as exc:self.failed.emit(str(exc))
+        finally:self.profile.clear()
+
+
+class ModelListWorker(QThread):
+    loaded=Signal(list);failed=Signal(str)
+    def __init__(self, profile):
+        super().__init__();self.profile=profile;self.cancel_event=threading.Event()
+    def run(self):
+        try:self.loaded.emit(list_models(self.profile,self.cancel_event))
         except Exception as exc:self.failed.emit(str(exc))
         finally:self.profile.clear()
 
@@ -325,6 +344,8 @@ class AIPage(QWidget):
         self.splitter.setChildrenCollapsible(False)
 
         self.profiles.currentIndexChanged.connect(self.profile_changed)
+        self.ai_model.activated.connect(lambda *_: self.apply_model())
+        self.ai_model.lineEdit().editingFinished.connect(self.apply_model)
         self.saved_chats.activated.connect(self.load_chat)
         self.composer.textChanged.connect(self._schedule_save)
         self.composer.textChanged.connect(self._update_starter)
@@ -455,8 +476,35 @@ class AIPage(QWidget):
         self.privacy = QLabel()
         self.privacy.setTextFormat(Qt.TextFormat.PlainText)
         self.privacy.hide()
+        model_row = QHBoxLayout()
+        model_row.setSpacing(6)
+        self.model_caption = QLabel()
+        self.model_caption.setObjectName('fieldLabel')
+        model_row.addWidget(self.model_caption)
+        model_row.addSpacing(4)
+        self.ai_model = ChevronComboBox()
+        self.ai_model.setObjectName('aiModel')
+        self.ai_model.setEditable(True)
+        self.ai_model.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.ai_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.ai_model.setMinimumContentsLength(16)
+        self.ai_model.setMaximumWidth(340)
+        self.ai_model.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.ai_model.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.ai_model.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.ai_model.completer().setCompletionMode(self.ai_model.completer().CompletionMode.PopupCompletion)
+        self.ai_model.lineEdit().setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        model_row.addWidget(self.ai_model, 1)
+        self.refresh_models = QPushButton()
+        self.refresh_models.setObjectName('quiet')
+        self.refresh_models.setFixedSize(44, 44)
+        self.refresh_models.clicked.connect(self.refresh_model_list)
+        model_row.addWidget(self.refresh_models)
+        model_row.addStretch()
         self.consent = QCheckBox()
-        layout.addWidget(self.consent)
+        model_row.addWidget(self.consent)
+        layout.addLayout(model_row)
+        self.model_worker = None
 
         self.voice_frame = QFrame()
         self.voice_frame.setObjectName('chatComposer')
@@ -504,7 +552,7 @@ class AIPage(QWidget):
         selected = selected or self.profiles.currentData()
         self.profiles.blockSignals(True)
         self.profiles.clear()
-        for profile in list_profiles():self.profiles.addItem(f'{profile["name"]} · {profile["model"]}', profile['id'])
+        for profile in list_profiles():self.profiles.addItem(profile['name'], profile['id'])
         index = self.profiles.findData(selected)
         if index >= 0:self.profiles.setCurrentIndex(index)
         self.profiles.blockSignals(False)
@@ -531,7 +579,86 @@ class AIPage(QWidget):
         self.consent.setToolTip(self.privacy.text())
         self.consent.setAccessibleDescription(self.privacy.text())
         self.profiles.setToolTip(self.privacy.text())
+        self.populate_models()
         if reset_consent:self._schedule_save()
+
+    def populate_models(self):
+        """Show the connection's cached model list without contacting the provider."""
+        profile = None
+        if self.profiles.currentData():
+            try:profile = get_profile(self.profiles.currentData(), include_secret=False)
+            except Exception:profile = None
+        self.ai_model.blockSignals(True)
+        self.ai_model.clear()
+        if profile:
+            models = list(profile.get('models') or [])
+            if profile['model'] not in models:models.insert(0, profile['model'])
+            self.ai_model.addItems(models)
+            self.ai_model.setCurrentIndex(self.ai_model.findText(profile['model']))
+            self.ai_model.lineEdit().setPlaceholderText(t('Type a model ID or refresh the list'))
+        else:
+            self.ai_model.setEditText('')
+            self.ai_model.lineEdit().setPlaceholderText(t('Connect an AI to choose a model'))
+        self.ai_model.setToolTip(profile['model'] if profile else t('Connect an AI to choose a model'))
+        self.ai_model.blockSignals(False)
+        self._profile_model = profile['model'] if profile else ''
+        self.set_busy(bool(self.worker and self.worker.isRunning()))
+
+    def apply_model(self):
+        profile_id = self.profiles.currentData()
+        model = self.ai_model.currentText().strip()
+        if not profile_id or self._active() or not model or model == getattr(self, '_profile_model', ''):
+            return
+        try:
+            saved = set_profile_model(profile_id, model)
+        except Exception as exc:
+            self.status.setText(t(str(exc)))
+            self.ai_model.blockSignals(True)
+            self.ai_model.setEditText(self._profile_model)
+            self.ai_model.blockSignals(False)
+            return
+        self._profile_model = saved
+        if self.ai_model.findText(saved) < 0:
+            self.ai_model.blockSignals(True)
+            self.ai_model.insertItem(0, saved)
+            self.ai_model.setCurrentIndex(0)
+            self.ai_model.blockSignals(False)
+        self.ai_model.setToolTip(saved)
+        self.status.setText(t('Chat model set to {model}.').format(model=saved))
+
+    def refresh_model_list(self):
+        profile_id = self.profiles.currentData()
+        if not profile_id or self._active() or (self.model_worker and self.model_worker.isRunning()):
+            return
+        try:profile = get_profile(profile_id, include_secret=True)
+        except Exception as exc:
+            self.status.setText(t(str(exc)))
+            return
+        worker = ModelListWorker(profile)
+        self.model_worker = worker
+        worker.loaded.connect(lambda models, w=worker, p=profile_id:self._models_loaded(p, models) if self.model_worker is w else None)
+        worker.failed.connect(lambda error, w=worker:self.status.setText(t(error)) if self.model_worker is w else None)
+        worker.finished.connect(lambda w=worker:self._model_worker_finished(w))
+        self.status.setText(t('Loading models…'))
+        worker.start()
+        self.set_busy(bool(self.worker and self.worker.isRunning()))
+
+    def _models_loaded(self, profile_id, models):
+        if profile_id != self.profiles.currentData():
+            return
+        try:
+            set_profile_model(profile_id, self._profile_model, models)
+        except Exception as exc:
+            self.status.setText(t(str(exc)))
+            return
+        self.populate_models()
+        self.status.setText(t('{count} models available.').format(count=len(models)))
+
+    def _model_worker_finished(self, worker):
+        if self.model_worker is worker:
+            self.model_worker = None
+            self.set_busy(bool(self.worker and self.worker.isRunning()))
+        worker.deleteLater()
 
     def connect_free_ai(self):
         if self._active():
@@ -815,6 +942,11 @@ class AIPage(QWidget):
         for widget in [self.profiles, self.connections, self.chat_mode, self.new, self.saved_chats,
                        self.use, self.include, self.consent, self.chat_actions, self.empty_connect]:
             widget.setEnabled(not locked)
+        has_profile = bool(self.profiles.currentData())
+        listing = bool(self.model_worker and self.model_worker.isRunning())
+        self.ai_model.setEnabled(not locked and has_profile and not listing)
+        self.refresh_models.setEnabled(not locked and has_profile and not listing)
+        self.refresh_models.setVisible(has_profile)
         self.send.setEnabled(not locked and bool(self.composer.toPlainText().strip()))
         self._update_starter(locked)
         # The user may keep typing while local speech processing runs.
@@ -896,6 +1028,7 @@ class AIPage(QWidget):
         if self._active():return
         question = self.composer.toPlainText().strip()
         if not question:return
+        self.apply_model()
         profile = None
         try:
             if not self.profiles.currentData():raise ValueError(t('Choose or add a connection first.'))
@@ -975,6 +1108,9 @@ class AIPage(QWidget):
 
     def shutdown(self):
         if not self._persist_before_switch():return False
+        if self.model_worker and self.model_worker.isRunning():
+            self.model_worker.cancel_event.set()
+            self.model_worker.wait(100)
         if self.worker and self.worker.isRunning():
             self.worker.cancel_event.set()
             return self.worker.wait(100)
@@ -997,6 +1133,7 @@ class AIPage(QWidget):
             (self.attach_audio, 'plus', 'muted'), (self.use, 'file', 'muted'),
             (self.speech_settings, 'tune', 'muted'), (self.copy, 'copy', 'muted'),
             (self.stop, 'stop', 'muted'), (self.voice_cancel, 'stop', 'danger'),
+            (self.refresh_models, 'refresh', 'muted'),
             (self.send, 'send', 'action_ink'),
         ):
             widget.setIcon(icon(symbol, colors[role]))
@@ -1032,6 +1169,12 @@ class AIPage(QWidget):
             widget.setText('')
             widget.setAccessibleName(t(title))
             widget.setToolTip(t(title))
+        self.model_caption.setText(t('AI model'))
+        self.model_caption.setBuddy(self.ai_model)
+        self.ai_model.setAccessibleName(t('AI model'))
+        self.refresh_models.setText('')
+        self.refresh_models.setAccessibleName(t('Refresh model list'))
+        self.refresh_models.setToolTip(t('Refresh model list') + '\n' + t('Only your API key is sent to list models; no conversation text.'))
         self.profiles.setAccessibleName(t('Connections'))
         self.profiles.setPlaceholderText(t('Connections'))
         self.chat_mode.setAccessibleName(t('Chat mode'))

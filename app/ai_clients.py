@@ -1,7 +1,8 @@
 """Explicit, text-only AI requests. Importing or validating never uses network.
 
-Call chat only after an explicit user Send action. This module does not read
-audio, discover models, ping providers, or persist prompts/responses/credentials.
+Call chat only after an explicit user Send action, and list_models only after an
+explicit model-list refresh. This module does not read audio, ping providers in
+the background, or persist prompts/responses/credentials.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ MAX_MESSAGES = 80
 MAX_OUTPUT_TOKENS = 4096
 DEFAULT_OUTPUT_TOKENS = 1024
 MAX_REPLY_BYTES = 2_000_000
+MAX_LISTED_MODELS = 500
 REQUEST_TIMEOUT = (10, 60)
 DEFAULT_BASE_URLS = {
     'gemini': 'https://generativelanguage.googleapis.com/v1beta',
@@ -38,6 +40,10 @@ class AIError(ValueError):
 
 class AICancelled(AIError):
     pass
+
+
+def is_free_openrouter_model(model):
+    return model == OPENROUTER_FREE_MODEL or (model.endswith(':free') and '/' in model)
 
 
 def is_local_url(value):
@@ -98,7 +104,7 @@ def validate_profile(profile):
             raise AIError('The local Ollama profile requires a loopback server.')
         if model.lower().endswith((':cloud', '-cloud')):
             raise AIError('Choose an installed local Ollama model, not a cloud-routed model.')
-    if provider == 'openrouter' and (base_url != OPENROUTER_BASE_URL or model != OPENROUTER_FREE_MODEL):
+    if provider == 'openrouter' and (base_url != OPENROUTER_BASE_URL or not is_free_openrouter_model(model)):
         raise AIError('The browser sign-in connection is limited to OpenRouter free models.')
     try:
         output_tokens = int(profile.get('max_output_tokens', DEFAULT_OUTPUT_TOKENS))
@@ -144,6 +150,94 @@ def _endpoint(config):
     if path.endswith('/chat/completions'):
         return base
     return base + ('/v1/chat/completions' if not path else '/chat/completions')
+
+
+def _models_endpoint(config):
+    base = config['base_url']
+    path = urlsplit(base).path
+    if config['provider'] == 'gemini':
+        return base + ('' if path else '/v1beta') + '/models?pageSize=1000'
+    if config['provider'] == 'ollama':
+        for suffix in ('/api/chat', '/api'):
+            if path.endswith(suffix):
+                return base[:-len(suffix)] + '/api/tags'
+        return base + '/api/tags'
+    if path.endswith('/chat/completions'):
+        base = base[:-len('/chat/completions')]
+    return base + ('/v1/models' if not urlsplit(base).path else '/models')
+
+
+def _model_ids(config, data):
+    """Extract chat-capable model IDs; malformed entries are skipped, not trusted."""
+    provider = config['provider']
+    if not isinstance(data, dict):
+        raise AIError('The provider returned an invalid model list.')
+    if provider == 'gemini':
+        rows = data.get('models', [])
+        ids = [row.get('name', '') for row in rows if isinstance(row, dict)
+               and 'generateContent' in (row.get('supportedGenerationMethods') or [])]
+    elif provider == 'ollama':
+        ids = [row.get('name', '') for row in data.get('models', []) if isinstance(row, dict)]
+    else:
+        ids = [row.get('id', '') for row in data.get('data', []) if isinstance(row, dict)]
+    result = []
+    for value in ids:
+        if not isinstance(value, str):
+            continue
+        try:
+            model = validate_profile({**config, 'model': value})['model']
+        except AIError:
+            continue
+        if model not in result:
+            result.append(model)
+    if provider == 'openrouter' and OPENROUTER_FREE_MODEL not in result:
+        result.insert(0, OPENROUTER_FREE_MODEL)
+    return sorted(result[:MAX_LISTED_MODELS], key=lambda m: (m != OPENROUTER_FREE_MODEL, m.lower()))
+
+
+def list_models(profile, cancel_event=None):
+    """Return model IDs from the provider's models endpoint after an explicit refresh.
+
+    Only the API key is sent; no conversation text or audio leaves the device.
+    """
+    config = validate_profile(profile)
+    cancel = cancel_event or threading.Event()
+    key = profile.get('key', '') or ''
+    if not isinstance(key, str) or len(key) > 8192 or any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise AIError('The API key contains invalid characters.')
+    headers = {'Accept': 'application/json'}
+    if key:
+        headers['x-goog-api-key' if config['provider'] == 'gemini' else 'Authorization'] = key if config['provider'] == 'gemini' else 'Bearer '+key
+    with requests.Session() as session:
+        if config['is_local']:
+            session.trust_env = False
+        try:
+            response = session.get(_models_endpoint(config), headers=headers, timeout=(10, 30),
+                                   allow_redirects=False, stream=True)
+        except requests.Timeout:
+            raise AIError('The AI provider timed out while listing models.') from None
+        except requests.RequestException:
+            raise AIError('Could not reach the AI provider. Check the endpoint, connection or local server. The request was not retried.') from None
+        try:
+            if response.status_code != 200:
+                raise AIError(f'AI provider HTTP {response.status_code}. The model list is unavailable; you can still type a model ID.')
+            body = bytearray()
+            for chunk in response.iter_content(chunk_size=65536):
+                if cancel.is_set():
+                    raise AICancelled('AI request cancelled.')
+                body.extend(chunk)
+                if len(body) > MAX_REPLY_BYTES * 4:
+                    raise AIError('The provider model list exceeds the application size limit.')
+            data = json.loads(body.decode('utf-8'))
+        except (ValueError, UnicodeError) as exc:
+            if isinstance(exc, AIError):
+                raise
+            raise AIError('The provider returned an invalid model list.') from None
+        except requests.RequestException:
+            raise AIError('The model list download was interrupted.') from None
+        finally:
+            response.close()
+    return _model_ids(config, data)
 
 
 def _payload(config, messages):

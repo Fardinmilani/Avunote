@@ -71,6 +71,55 @@ class AIPanelTests(unittest.TestCase):
         self.assertEqual(self.page.messages,[{'role':'user','content':'Summarize'},{'role':'assistant','content':'Summary'}])
         self.assertEqual(self.raw,'Original transcript <script>alert(1)</script>')
 
+    def test_model_selector_persists_and_is_used_for_chat(self):
+        self.assertTrue(self.page.ai_model.isEnabled())
+        self.assertEqual(self.page.ai_model.currentText(), 'example-model')
+        self.page.ai_model.setEditText('gemini-2.5-pro');self.page.apply_model()
+        self.assertEqual(ai_profiles.get_profile(self.profile_id)['model'], 'gemini-2.5-pro')
+        self.assertEqual(ai_profiles.get_profile(self.profile_id)['key'], 'unit-secret-key-not-real')
+        self.assertEqual(self.page.profiles.currentText(), 'Test cloud')
+        self.assertIn('gemini-2.5-pro', self.page.status.text())
+        self.page.ai_model.setEditText('not a model');self.page.apply_model()
+        self.assertEqual(self.page.ai_model.currentText(), 'gemini-2.5-pro')
+        self.assertEqual(ai_profiles.get_profile(self.profile_id)['model'], 'gemini-2.5-pro')
+        self.page.consent.setChecked(True);self.page.ai_model.setEditText('gemini-2.5-flash')
+        self.page.composer.setPlainText('Summarize');self.page.send_chat()
+        self.assertEqual(FakeWorker.instances[-1].profile['model'], 'gemini-2.5-flash')
+        self.assertFalse(self.page.ai_model.isEnabled());self.assertFalse(self.page.refresh_models.isEnabled())
+        FakeWorker.instances[-1].complete('Done')
+        self.assertTrue(self.page.ai_model.isEnabled())
+
+    def test_model_list_refresh_is_explicit_and_cached(self):
+        class FakeLister(QObject):
+            loaded=Signal(list);failed=Signal(str);finished=Signal()
+            made=[]
+            def __init__(self,profile):
+                super().__init__();self.profile=dict(profile);self.cancel_event=threading.Event();self.running=False;self.made.append(self)
+            def start(self):self.running=True
+            def isRunning(self):return self.running
+            def wait(self,timeout):return True
+            def deleteLater(self):pass
+        lister=patch.object(panel,'ModelListWorker',FakeLister);lister.start();self.addCleanup(lister.stop)
+        self.page.refresh_profiles(self.profile_id)
+        self.assertEqual(FakeLister.made,[])
+        self.page.refresh_model_list()
+        self.assertEqual(FakeLister.made[0].profile['key'],'unit-secret-key-not-real')
+        self.assertFalse(self.page.refresh_models.isEnabled())
+        worker=FakeLister.made[0];worker.running=False
+        worker.loaded.emit(['example-model','gemini-2.5-pro']);worker.finished.emit()
+        self.assertEqual([self.page.ai_model.itemText(i) for i in range(self.page.ai_model.count())],['example-model','gemini-2.5-pro'])
+        self.assertEqual(ai_profiles.get_profile(self.profile_id)['models'],['example-model','gemini-2.5-pro'])
+        self.assertTrue(self.page.refresh_models.isEnabled())
+        self.assertIn('2 models', self.page.status.text())
+
+    def test_model_selector_without_connection(self):
+        ai_profiles.delete_profile(self.profile_id);self.page.refresh_profiles()
+        self.assertFalse(self.page.ai_model.isEnabled());self.assertFalse(self.page.refresh_models.isEnabled())
+        self.assertTrue(self.page.refresh_models.isHidden())
+        self.assertEqual(self.page.ai_model.currentText(),'')
+        self.assertEqual(self.page.ai_model.lineEdit().placeholderText(),'Connect an AI to choose a model')
+        self.page.refresh_model_list();self.page.apply_model()
+
     def test_grammar_mode_reviews_voice_text_without_bypassing_consent(self):
         self.page.chat_mode.setCurrentIndex(self.page.chat_mode.findData('grammar'))
         self.page.append_voice_transcript('I has a book.')

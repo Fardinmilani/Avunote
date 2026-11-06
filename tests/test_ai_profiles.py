@@ -36,6 +36,22 @@ class ProfileTests(unittest.TestCase):
         profiles._SESSION_KEYS.clear()
         self.assertEqual(profiles.get_profile(profile_id)['key'], '')
 
+    def test_set_profile_model_keeps_key_and_caches_valid_models(self):
+        profile_id = profiles.save_profile(value())
+        self.assertEqual(profiles.set_profile_model(profile_id, 'gemini-2.5-pro', ['gemini-2.5-pro', 'bad model', 'gemini-2.5-pro']),
+                         'gemini-2.5-pro')
+        shown = profiles.get_profile(profile_id)
+        self.assertEqual(shown['model'], 'gemini-2.5-pro')
+        self.assertEqual(shown['models'], ['gemini-2.5-pro'])
+        self.assertEqual(shown['key'], 'secret-profile-key-54321')
+        with self.assertRaises(AIError): profiles.set_profile_model(profile_id, 'bad model')
+        self.assertEqual(profiles.get_profile(profile_id)['model'], 'gemini-2.5-pro')
+        profiles.save_profile(value(id=profile_id, model='gemini-2.5-flash'))
+        self.assertEqual(profiles.get_profile(profile_id)['models'], ['gemini-2.5-pro'])
+        profiles.save_profile(value(id=profile_id, base_url='https://example.com/v1beta'))
+        self.assertEqual(profiles.get_profile(profile_id)['models'], [])
+        with self.assertRaises(AIError): profiles.set_profile_model('missing', 'x')
+
     def test_non_windows_session_only_notice(self):
         with patch.object(profiles,'persistent_keys_available',return_value=False):
             profile_id = profiles.save_profile(value(store_key=True))

@@ -117,6 +117,8 @@ def _public(profile):
     encrypted = bool(profile.get('key_ciphertext'))
     session = bool(_SESSION_KEYS.get(profile_id))
     result = {key: profile.get(key) for key in ['id', 'name', 'provider', 'base_url', 'model', 'max_output_tokens']}
+    models = profile.get('models')
+    result['models'] = [x for x in models if isinstance(x, str)] if isinstance(models, list) else []
     result.update({'store_key': encrypted, 'has_key': encrypted or session,
                    'key_storage': 'windows-dpapi' if encrypted else 'session' if session else 'none',
                    'storage_notice': '' if persistent_keys_available() else 'This platform keeps API keys in memory for this session only.'})
@@ -170,6 +172,8 @@ def save_profile(value):
         store_key = bool(value.get('store_key', False)) and persistent_keys_available()
         profile = {field: normalized[field] for field in ['provider', 'base_url', 'model', 'max_output_tokens']}
         profile.update({'id': profile_id, 'name': name.strip(), 'key_ciphertext': _protect(key) if key and store_key else ''})
+        if same_connection and existing.get('models'):
+            profile['models'] = existing['models']
         if existing:
             profiles[profiles.index(existing)] = profile
         else:
@@ -182,6 +186,29 @@ def save_profile(value):
         else:
             _SESSION_KEYS.pop(profile_id, None)
         return profile_id
+
+
+def set_profile_model(profile_id, model, models=None):
+    """Change only the model (and optionally the cached model list); the key is untouched."""
+    with _LOCK:
+        profiles = _read()
+        profile = next((x for x in profiles if x['id'] == profile_id), None)
+        if profile is None:
+            raise AIError('The AI profile no longer exists.')
+        normalized = validate_profile({**profile, 'model': model})
+        profile['model'] = normalized['model']
+        if models is not None:
+            cached = []
+            for value in models:
+                try:
+                    candidate = validate_profile({**profile, 'model': value})['model']
+                except AIError:
+                    continue
+                if candidate not in cached:
+                    cached.append(candidate)
+            profile['models'] = cached[:500]
+        _write(profiles)
+        return normalized['model']
 
 
 def delete_profile(profile_id):
