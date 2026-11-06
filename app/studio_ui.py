@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import uuid
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QUrl
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QSize, QUrl, QSignalBlocker
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QIcon, QPixmap, QDesktopServices, QTextOption, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
                                QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox, QTextEdit,
@@ -19,54 +19,25 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabe
 from model_catalog import (CATALOG, LANGUAGES, get_model, models_for_language,
                            find_local_model, data_root, register_local_root)
 from model_downloads import DownloadManager
+from model_picker import ModelChoice, ModelPopupMixin
 from ui_i18n import (tr, set_language, current_language, UI_LANGUAGES,
                      RTL_LANGUAGES, register_speech_languages, language_title)
-from studio_theme import THEMES, resolve_theme, stylesheet as theme_stylesheet
+from studio_theme import (COLORS, THEMES, ChevronComboBox, native_palette, resolve_theme,
+                          stylesheet as theme_stylesheet)
 from atomic_files import atomic_write_text, read_text_shared
+from app_updates import running_version
+from studio_icons import icon
 
 register_speech_languages(LANGUAGES)
 
 FORMATS = {'.wav', '.mp3', '.m4a', '.ogg'}
-GREEN = '#6754e8'
-
-
-def icon(kind, color='#66748c'):
-    pixmap = QPixmap(32, 32)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(QColor(color), 2.3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    if kind == 'mic':
-        painter.drawRoundedRect(12, 4, 8, 16, 4, 4)
-        painter.drawArc(7, 8, 18, 18, 180*16, 180*16)
-        painter.drawLine(16, 26, 16, 30)
-        painter.drawLine(10, 30, 22, 30)
-    elif kind == 'file':
-        painter.drawRoundedRect(7, 4, 18, 24, 3, 3)
-        painter.drawLine(11, 12, 21, 12)
-        painter.drawLine(11, 17, 21, 17)
-        painter.drawLine(11, 22, 17, 22)
-    elif kind == 'stop':
-        painter.setBrush(QColor(color))
-        painter.drawRoundedRect(8, 8, 16, 16, 3, 3)
-    elif kind == 'library':
-        for x in [5, 18]:
-            for y in [5, 18]:
-                painter.drawRoundedRect(x, y, 9, 9, 2, 2)
-    elif kind == 'download':
-        painter.drawLine(16, 4, 16, 22)
-        painter.drawLine(9, 15, 16, 22)
-        painter.drawLine(23, 15, 16, 22)
-        painter.drawLine(6, 27, 26, 27)
-    elif kind == 'refresh':
-        painter.drawArc(6, 6, 20, 20, 40*16, 285*16)
-        painter.drawLine(23, 5, 25, 12)
-        painter.drawLine(25, 12, 18, 10)
-    else:
-        for x, height in [(5, 9), (10, 18), (16, 27), (22, 18), (27, 9)]:
-            painter.drawLine(x, (32-height)//2, x, (32+height)//2)
-    painter.end()
-    return QIcon(pixmap)
+MODEL_STATES = {
+    'idle': 'دانلود نشده', 'resolving': 'آماده‌سازی دانلود', 'downloading': 'در حال دانلود',
+    'paused': 'متوقف موقت؛ برای ادامه آماده است', 'verifying': 'بررسی صحت فایل‌ها',
+    'completed': 'آماده استفاده آفلاین', 'cancelled': 'دانلود لغو شد',
+    'cancelled-pending': 'در حال لغو دانلود', 'error': 'دانلود کامل نشد',
+}
+DOWNLOAD_IN_PROGRESS = {'resolving', 'downloading', 'verifying'}
 
 
 class Waveform(QWidget):
@@ -86,7 +57,8 @@ class Waveform(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         spacing = self.width()/len(self.values)
-        painter.setPen(QPen(QColor(GREEN if self.active else ('#44516a' if self.dark else '#d9dfed')), max(2, spacing*.38),
+        colors = COLORS['dark' if self.dark else 'light']
+        painter.setPen(QPen(QColor(colors['brand'] if self.active else colors['wave']), max(2, spacing*.38),
                             Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         for index, level in enumerate(self.values):
             height = max(4, level * (self.height()-14))
@@ -136,7 +108,7 @@ class Recorder(QThread):
             self.failed.emit(str(exc))
 
 
-class ComboBox(QComboBox):
+class ComboBox(ChevronComboBox):
     """Keep a clear vector disclosure mark with the custom light Qt stylesheet."""
     SOURCE_ROLE = int(Qt.ItemDataRole.UserRole) + 101
     TOOLTIP_ROLE = int(Qt.ItemDataRole.UserRole) + 102
@@ -170,15 +142,8 @@ class ComboBox(QComboBox):
             if tooltip is not None:
                 super().setItemData(index, tr(tooltip), Qt.ItemDataRole.ToolTipRole)
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#66748c'), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        x = 14 if self.layoutDirection() == Qt.LayoutDirection.RightToLeft else self.width()-15
-        y = self.height()//2
-        painter.drawLine(x-4, y-2, x, y+2)
-        painter.drawLine(x, y+2, x+4, y-2)
+class ModelComboBox(ModelPopupMixin, ComboBox):
+    downloadRequested = Signal(str, str)
 
 
 class LocalLabel(QLabel):
@@ -243,59 +208,10 @@ def button(text, callback, name=None, symbol=None):
         widget.setObjectName(name)
     if symbol:
         widget.setProperty('symbol', symbol)
-        widget.setIcon(icon(symbol, '#ffffff' if name == 'primary' else '#66748c'))
-        widget.setIconSize(QSize(22, 22))
+        widget.setIcon(icon(symbol, COLORS['light']['action_ink'] if name == 'primary' else None))
+        widget.setIconSize(QSize(19, 19))
     return widget
 
-
-STYLE = '''
-QMainWindow, QWidget#shell, QWidget#page {background:#f7f8fc; color:#102240;}
-QWidget {font-family:"Segoe UI"; font-size:14px; color:#102240;}
-QFrame#rail {background:#ffffff; border:0; border-left:1px solid #e5e8f0;}
-QFrame#card, QFrame#resultCard, QFrame#settings, QFrame#modelCard {background:#ffffff; border:1px solid #e5e8f0; border-radius:16px;}
-QFrame#notice {background:#f0edff; border:1px solid #e1dcff; border-radius:11px;}
-QFrame#disclosure {background:#f8f8fc; border:1px solid #e5e8f0; border-radius:8px;}
-QLabel#eyebrow {font-size:12px; color:#6754e8; font-weight:600;}
-QLabel#libraryTitle {font-size:18px; font-weight:700; color:#102240;}
-QLabel#brand {font-size:24px; font-weight:700; color:#102240;}
-QLabel#heading {font-size:27px; font-weight:700; color:#102240;}
-QLabel#cardTitle {font-size:17px; font-weight:600; color:#102240;}
-QLabel#muted {color:#5c6b82; font-size:13px;}
-QLabel#badge {color:#5140c3; background:#f0edff; border-radius:9px; padding:7px 10px; font-size:12px;}
-QLabel#metric {font-size:16px; color:#102240; font-weight:600;}
-QPushButton {background:#ffffff; border:1px solid #dce1ed; border-radius:9px; padding:8px 12px; color:#243751;}
-QPushButton:hover {background:#f4f2ff; border-color:#b5aaef;}
-QPushButton:focus {border:2px solid #6754e8;}
-QPushButton:disabled {background:#f6f7fa; color:#8994a8; border-color:#e5e8f0;}
-QPushButton#primary {background:#6754e8; color:#ffffff; border-color:#6754e8; font-weight:600;}
-QPushButton#primary:hover {background:#5541d4;}
-QPushButton#primary:disabled {background:#eeebfa; color:#8e85b5; border-color:#e1dcf3;}
-QPushButton#danger {background:#fff1f2; border-color:#e5adb9; color:#a42d4d;}
-QPushButton#nav {text-align:right; border:0; background:transparent; color:#66748c; padding:12px 14px;}
-QPushButton#nav:hover {background:#f7f6fc;}
-QPushButton#nav:checked {background:#eeebff; color:#5944d0; font-weight:600;}
-QPushButton#accent {background:#f0edff; border-color:#e1dcff; color:#5741cf;}
-QPushButton#accent:hover {background:#e4deff;}
-QPushButton#link {background:transparent; border:0; color:#6754e8; font-size:12px; padding:3px 0; text-align:left;}
-QPushButton#link:hover {color:#4730c4; text-decoration:underline;}
-QComboBox {background:#ffffff; border:1px solid #dce1ed; border-radius:9px; padding:9px 10px; min-height:22px;}
-QComboBox:focus {border:2px solid #6754e8;}
-QComboBox::drop-down {border:0; width:24px;}
-QComboBox QAbstractItemView {background:#ffffff; color:#102240; selection-background-color:#eeebff; selection-color:#5140c3; border:1px solid #dce1ed;}
-QTextEdit {background:#ffffff; border:0; color:#102240; font-size:19px; padding:12px; selection-background-color:#e1dcff; selection-color:#102240;}
-QProgressBar {background:#eeedf6; border:0; border-radius:3px; min-height:5px; max-height:5px;}
-QProgressBar::chunk {background:#6754e8; border-radius:3px;}
-QProgressBar#downloadProgress {min-height:6px; max-height:6px; background:#ebeaf5;}
-QScrollArea {background:transparent; border:0;}
-QScrollArea > QWidget > QWidget {background:#f7f8fc;}
-QTableWidget {background:#ffffff; border:1px solid #e5e8f0; border-radius:12px; gridline-color:#edf0f5; alternate-background-color:#fafbfe;}
-QHeaderView::section {background:#f0f2f8; color:#5c6b82; padding:12px; border:0;}
-QTableWidget::item {padding:10px;}
-QScrollBar:vertical {background:#f7f8fc; width:8px; margin:0;}
-QScrollBar::handle:vertical {background:#ccd1e2; border-radius:4px; min-height:30px;}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height:0;}
-QToolTip {background:#ffffff; color:#102240; border:1px solid #dce1ed; padding:8px;}
-'''
 
 
 class Studio(QMainWindow):
@@ -322,7 +238,7 @@ class Studio(QMainWindow):
             self.theme_choice = 'system'
         self.resolved_theme = resolve_theme(self.theme_choice, QApplication.styleHints().colorScheme())
         self.star_prompt_seen = bool(self.saved_settings.get('star_prompt_seen', False))
-        self.allow_star_prompt = os.environ.get('VOXRIVA_SUPPRESS_PROMPTS') != '1'
+        self.allow_star_prompt = (os.environ.get('AVUNOTE_SUPPRESS_PROMPTS') or os.environ.get('VOXRIVA_SUPPRESS_PROMPTS')) != '1'
         self.process = None
         self.recorder = None
         self.recording = False
@@ -335,11 +251,16 @@ class Studio(QMainWindow):
         self.started = 0
         self.run_model = None
         self.run_language = 'azb'
+        self.recording_target = 'studio'
+        self.transcription_target = 'studio'
+        self.ai_output = None
         self.closing = False
-        self.setWindowTitle(tr('Voxriva — استودیوی گفتار آفلاین'))
+        self.updates = None
+        self.version_text = f'Avunote {running_version()}'
+        self.setWindowTitle(tr('Avunote — استودیوی گفتار آفلاین'))
         self.setWindowIcon(QIcon(self.brand_pixmap(True)))
         self.resize(1280, 880)
-        self.setMinimumSize(1000, 760)
+        self.setMinimumSize(940, 660)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if self.ui_language in RTL_LANGUAGES else Qt.LayoutDirection.LeftToRight)
         self.setAcceptDrops(True)
         self.build()
@@ -347,33 +268,23 @@ class Studio(QMainWindow):
         QApplication.styleHints().colorSchemeChanged.connect(self.system_theme_changed)
         QShortcut(QKeySequence('Ctrl+O'), self, activated=self.choose_file)
         QShortcut(QKeySequence('Escape'), self, activated=self.cancel)
+        QShortcut(QKeySequence('Ctrl+,'), self, activated=lambda: self.show_page(4))
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(150)
         self.refresh_devices()
         self.refresh_history()
         index = self.language.findData(self.saved_settings.get('language', 'azb'))
-        self.language.setCurrentIndex(max(0, index))
+        with QSignalBlocker(self.language):
+            self.language.setCurrentIndex(max(0, index))
         self.language_changed()
-        index = self.model.findData(self.saved_settings.get('model', 'whisper-base-full'))
-        if index >= 0:
-            self.model.setCurrentIndex(index)
-        self.selection_changed()
         self.refresh_library()
         self.retranslate_ui()
 
     def brand_pixmap(self, mark_only=False):
         base = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
-        transparent = QPixmap(str(base/'assets/voxriva-logo-transparent.png'))
-        if not transparent.isNull():
-            # Supplied theme assets are tightly framed and already transparent.
-            return transparent
-        pixmap = QPixmap(str(base/'assets/voxriva-logo.png'))
-        if pixmap.isNull():
-            return QPixmap()
-        w, h = pixmap.width(), pixmap.height()
-        region = (.34, .24, .33, .37) if mark_only else (.19, .235, .63, .535)
-        return pixmap.copy(int(w*region[0]), int(h*region[1]), int(w*region[2]), int(h*region[3]))
+        asset = 'avunote-mark.png' if mark_only else 'avunote-logo-transparent.png'
+        return QPixmap(str(base/'assets'/asset))
 
     def build(self):
         shell = QWidget()
@@ -382,294 +293,370 @@ class Studio(QMainWindow):
         outer = QHBoxLayout(shell)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
         rail = QFrame()
         rail.setObjectName('rail')
-        rail.setFixedWidth(216)
+        rail.setFixedWidth(184)
         navigation = QVBoxLayout(rail)
-        navigation.setContentsMargins(14, 14, 14, 12)
-        navigation.setSpacing(5)
-        brand = QLabel()
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        brand_image = self.brand_pixmap().scaled(256, 192, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        brand_image.setDevicePixelRatio(2)
-        brand.setPixmap(brand_image)
-        brand.setAccessibleName('Voxriva')
-        brand.setFixedHeight(96)
-        self.brand_label = brand
-        navigation.addWidget(brand)
-        tag = label('صدای شما. کلمات شما.', 'muted')
-        tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        navigation.addWidget(tag)
-        navigation.addSpacing(12)
-        navigation.addWidget(label('فضای کار', 'eyebrow'))
+        navigation.setContentsMargins(12, 16, 12, 12)
+        navigation.setSpacing(4)
+        self.brand_label = QLabel()
+        self.brand_label.setAccessibleName('Avunote')
+        self.brand_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.brand_label.setFixedHeight(52)
+        brand = self.brand_pixmap().scaled(258, 80, Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation)
+        brand.setDevicePixelRatio(2)
+        self.brand_label.setPixmap(brand)
+        navigation.addWidget(self.brand_label)
+        navigation.addSpacing(10)
+
         self.studio_nav = button('استودیوی گفتار', lambda: self.show_page(0), 'nav', 'wave')
-        self.library_nav = button('زبان‌ها و مدل‌ها', lambda: self.show_page(2), 'nav', 'library')
-        self.history_nav = button('تاریخچه', lambda: self.show_page(1), 'nav', 'file')
-        self.ai_nav = button('گفت‌وگوی AI', lambda: self.show_page(3), 'nav', 'wave')
-        for item in [self.studio_nav, self.library_nav, self.history_nav, self.ai_nav]:
+        self.history_nav = button('تاریخچه', lambda: self.show_page(1), 'nav', 'history')
+        self.library_nav = button('کتابخانه مدل‌ها', lambda: self.show_page(2), 'nav', 'library')
+        self.ai_nav = button('گفت‌وگوی AI', lambda: self.show_page(3), 'nav', 'chat')
+        self.settings_nav = button('Settings', lambda: self.show_page(4), 'nav', 'gear')
+        self.navigation = (self.studio_nav, self.history_nav, self.library_nav, self.ai_nav, self.settings_nav)
+        for item in self.navigation:
             item.setCheckable(True)
+        for item in (self.studio_nav, self.ai_nav, self.library_nav, self.history_nav):
             navigation.addWidget(item)
-        self.studio_nav.setChecked(True)
         navigation.addStretch()
-        privacy = label('تشخیص گفتار روی همین دستگاه است.', 'muted')
-        privacy.setToolTip('صدای شما برای پردازش به اینترنت ارسال نمی‌شود.')
-        navigation.addWidget(privacy)
-        navigation.addSpacing(8)
-        navigation.addWidget(label('ظاهر برنامه', 'muted'))
+        self.update_indicator = button('Update available', self.open_updates, 'accent', 'download')
+        self.update_indicator.hide()
+        navigation.addWidget(self.update_indicator)
+        navigation.addWidget(self.settings_nav)
+        navigation.addWidget(label(self.version_text, 'muted'))
+        outer.addWidget(rail)
+
+        self.pages = QStackedWidget()
+        self.pages.setObjectName('workspace')
+        outer.addWidget(self.pages, 1)
+        self.build_studio()
+        self.build_history()
+        self.build_library()
+
+        from ai_panel import AIPage
+        self.ai_page = AIPage(lambda: self.raw_text, parent=self)
+        if hasattr(self.ai_page, 'record_requested'):
+            self.ai_page.record_requested.connect(self.record_chat_voice)
+            self.ai_page.audio_requested.connect(self.choose_chat_audio)
+            self.ai_page.settings_requested.connect(lambda: self.show_page(0))
+            self.ai_page.cancel_voice_requested.connect(self.cancel)
+        self.pages.addWidget(self.ai_page)
+        self.build_settings()
+        self.studio_nav.setChecked(True)
+
+    @staticmethod
+    def title_row(title, *actions):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(label(title, 'heading'), 1)
+        for action in actions:
+            row.addWidget(action)
+        return row
+
+    @staticmethod
+    def field(grid, column, title, control, stretch=1):
+        caption = label(title, 'fieldLabel')
+        caption.setBuddy(control)
+        grid.addWidget(caption, 0, column)
+        grid.addWidget(control, 1, column)
+        grid.setColumnStretch(column, stretch)
+
+    def build_studio(self):
+        page = QWidget()
+        page.setObjectName('page')
+        main = QVBoxLayout(page)
+        main.setContentsMargins(26, 22, 26, 18)
+        main.setSpacing(14)
+        self.advanced_button = button('گزینه‌های پردازش', self.toggle_processing_options, 'quiet', 'tune')
+        self.advanced_button.setCheckable(True)
+        main.addLayout(self.title_row('استودیوی گفتار', self.advanced_button))
+
+        settings = QFrame()
+        settings.setObjectName('toolStrip')
+        config = QVBoxLayout(settings)
+        config.setContentsMargins(14, 12, 14, 10)
+        config.setSpacing(8)
+        fields = QGridLayout()
+        fields.setHorizontalSpacing(12)
+        fields.setVerticalSpacing(4)
+        self.language = ComboBox()
+        self.language.setProperty('speechSelector', True)
+        self.language.setMinimumContentsLength(12)
+        self.language.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        for item in LANGUAGES:
+            self.language.addItem(item['title'], item['code'])
+        self.language.currentIndexChanged.connect(self.language_changed)
+        self.model = ModelComboBox()
+        self.model.downloadRequested.connect(self.download_action)
+        self.model.setAccessibleName('مدل تشخیص گفتار')
+        self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model.setMinimumContentsLength(16)
+        self.model.setIconSize(QSize(18, 18))
+        self.model.setPlaceholderText(tr('هیچ مدل نصب‌شده‌ای نیست'))
+        self.model.currentIndexChanged.connect(self.selection_changed)
+        self.field(fields, 0, 'زبان گفتار', self.language, 2)
+        self.field(fields, 1, 'مدل', self.model, 3)
+        config.addLayout(fields)
+
+        readiness = QHBoxLayout()
+        readiness.setSpacing(8)
+        self.model_notice = label('وضعیت مدل در حال بررسی است.', 'modelNotice')
+        readiness.addWidget(self.model_notice, 1)
+        self.library_button = button('دریافت مدل', self.open_selected_library, 'accent', 'download')
+        readiness.addWidget(self.library_button)
+        config.addLayout(readiness)
+        self.build_processing_options(config)
+        main.addWidget(settings)
+
+        self.result_card = QFrame()
+        self.result_card.setObjectName('editorSurface')
+        result = QVBoxLayout(self.result_card)
+        result.setContentsMargins(16, 10, 16, 12)
+        result.setSpacing(10)
+        self.copy_button = button('کپی', self.copy_text, 'quiet', 'copy')
+        self.save_button = button('ذخیره متن', self.save_text, 'quiet', 'download')
+        self.retry_button = button('تبدیل دوباره', self.retry, 'quiet', 'refresh')
+        self.ai_button = button('Ask AI', self.discuss_transcript, 'accent', 'chat')
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+        toolbar.addWidget(label('Transcript', 'cardTitle'), 1)
+        for action in (self.copy_button, self.save_button, self.retry_button, self.ai_button):
+            action.setEnabled(False)
+            toolbar.addWidget(action)
+        result.addLayout(toolbar)
+
+        self.text = QTextEdit()
+        self.text.setObjectName('transcript')
+        self.text.setReadOnly(True)
+        self.text.document().setDocumentMargin(20)
+        transcript_view = QStackedWidget()
+        transcript_view.setMinimumHeight(140)
+        empty_view = QWidget()
+        empty_view.setObjectName('transcriptEmpty')
+        empty = QVBoxLayout(empty_view)
+        empty.setContentsMargins(14, 14, 14, 14)
+        empty.setSpacing(8)
+        self.transcript_glyph = QLabel()
+        self.transcript_glyph.setObjectName('emptyGlyph')
+        self.transcript_glyph.setFixedSize(60, 60)
+        self.transcript_glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addStretch()
+        empty.addWidget(self.transcript_glyph, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty.addWidget(label('No transcript yet', 'cardTitle'), 0, Qt.AlignmentFlag.AlignHCenter)
+        hint = label('برای شروع، فایل صوتی انتخاب کنید یا ضبط کنید.', 'muted')
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty.addWidget(hint)
+        empty.addStretch()
+        transcript_view.addWidget(empty_view)
+        transcript_view.addWidget(self.text)
+        self.text.textChanged.connect(
+            lambda: transcript_view.setCurrentIndex(0 if self.text.document().isEmpty() else 1))
+        result.addWidget(transcript_view, 1)
+
+        metadata = QHBoxLayout()
+        self.result_model = label('', 'muted')
+        self.result_model.setProperty('literalText', True)
+        self.metrics_label = label('', 'muted')
+        metadata.addWidget(self.result_model)
+        metadata.addStretch()
+        metadata.addWidget(self.metrics_label)
+        result.addLayout(metadata)
+        self.result_model.hide()
+        self.metrics_label.hide()
+        self.text.textChanged.connect(
+            lambda: self.result_model.setVisible(not self.text.document().isEmpty()))
+        self.text.textChanged.connect(
+            lambda: self.metrics_label.setVisible(not self.text.document().isEmpty()))
+        main.addWidget(self.result_card, 1)
+
+        dock = QFrame()
+        dock.setObjectName('captureDock')
+        dock_layout = QVBoxLayout(dock)
+        dock_layout.setContentsMargins(12, 10, 12, 10)
+        dock_layout.setSpacing(8)
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+        self.record_button = button('شروع ضبط', self.toggle_recording, 'primary', 'mic')
+        self.choose_button = button('Open audio', self.choose_file, 'secondary', 'folder')
+        self.choose_button.setToolTip('WAV · MP3 · M4A · OGG  ·  Ctrl+O')
+        input_row.addWidget(self.record_button)
+        input_row.addWidget(self.choose_button)
+        input_row.addStretch(1)
+        self.devices = ComboBox()
+        self.devices.setMinimumContentsLength(10)
+        self.devices.setMaximumWidth(210)
+        self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.devices.currentTextChanged.connect(self.devices.setToolTip)
+        input_row.addWidget(self.devices, 1)
+        self.refresh_button = button('', self.refresh_devices, 'quiet', 'refresh')
+        self.refresh_button.setFixedWidth(44)
+        self.refresh_button.setToolTip('بازخوانی میکروفون‌ها')
+        input_row.addWidget(self.refresh_button)
+        dock_layout.addLayout(input_row)
+        self.wave = Waveform()
+        self.wave.setFixedHeight(26)
+        self.wave.hide()
+        dock_layout.addWidget(self.wave)
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.hide()
+        dock_layout.addWidget(self.progress)
+        status_line = QHBoxLayout()
+        self.status = label('آماده برای شنیدن؛ فایل یا میکروفون را انتخاب کنید.', 'muted')
+        self.source_name = label('', 'muted')
+        self.source_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.source_name.hide()
+        status_line.addWidget(self.status, 2)
+        status_line.addWidget(self.source_name, 1)
+        self.cancel_button = button('توقف تبدیل', self.cancel, 'danger', 'stop')
+        self.cancel_button.hide()
+        status_line.addWidget(self.cancel_button)
+        dock_layout.addLayout(status_line)
+        main.addWidget(dock)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        self.pages.addWidget(scroll)
+
+    def build_processing_options(self, parent_layout):
+        self.processing_options = QWidget()
+        grid = QGridLayout(self.processing_options)
+        grid.setContentsMargins(0, 2, 0, 0)
+        grid.setSpacing(8)
+        self.mode = ComboBox()
+        self.mode.addItem('دقت بیشتر', 5)
+        self.mode.addItem('سریع‌تر', 1)
+        self.compute_device = ComboBox()
+        for title, key in [('خودکار؛ در صورت خطا CPU', 'auto'), ('CPU', 'cpu'),
+                           ('NVIDIA CUDA', 'cuda'), ('NPU؛ در صورت ناسازگاری CPU', 'npu')]:
+            self.compute_device.addItem(title, key)
+        index = self.compute_device.findData(self.saved_settings.get('device', 'auto'))
+        self.compute_device.setCurrentIndex(max(0, index))
+        self.chunk_seconds = ComboBox()
+        for seconds in (10, 15, 20, 25, 30):
+            self.chunk_seconds.addItem(f'{seconds} s', seconds)
+        index = self.chunk_seconds.findData(self.saved_settings.get('chunk_seconds', 20))
+        self.chunk_seconds.setCurrentIndex(index if index >= 0 else 2)
+        self.field(grid, 0, 'حالت پردازش', self.mode)
+        self.field(grid, 1, 'دستگاه پردازش', self.compute_device)
+        self.field(grid, 2, 'مدت هر بخش صوت', self.chunk_seconds)
+        self.compute_notice = label('', 'muted')
+        grid.addWidget(self.compute_notice, 2, 0, 1, 3)
+        self.compute_device.currentIndexChanged.connect(self.compute_choice_changed)
+        self.chunk_seconds.currentIndexChanged.connect(lambda *_: self.save_settings())
+        self.processing_options.hide()
+        parent_layout.addWidget(self.processing_options)
+
+    def build_history(self):
+        page = QWidget()
+        page.setObjectName('page')
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(26, 22, 26, 18)
+        layout.setSpacing(14)
+        folder = button('پوشه متن‌ها و ضبط‌ها',
+                        lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.data))),
+                        'quiet', 'folder')
+        reload = button('بازخوانی', self.refresh_history, 'quiet', 'refresh')
+        layout.addLayout(self.title_row('تاریخچه', folder, reload))
+        self.history_view = QStackedWidget()
+        empty = QFrame()
+        empty.setObjectName('editorSurface')
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.addStretch()
+        empty_layout.addWidget(label('No transcripts yet', 'cardTitle'), 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addStretch()
+        self.history_view.addWidget(empty)
+        self.table = QTableWidget(0, 5)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().hide()
+        self.table.cellDoubleClicked.connect(self.load_history)
+        self.history_view.addWidget(self.table)
+        layout.addWidget(self.history_view, 1)
+        self.open_history_button = button('Open transcript', self.open_history_selection, 'secondary', 'file')
+        self.open_history_button.setEnabled(False)
+        self.table.itemSelectionChanged.connect(
+            lambda: self.open_history_button.setEnabled(self.table.currentRow() >= 0))
+        QShortcut(QKeySequence('Return'), self.table, activated=self.open_history_selection,
+                  context=Qt.ShortcutContext.WidgetShortcut)
+        layout.addWidget(self.open_history_button, 0, Qt.AlignmentFlag.AlignTrailing)
+        self.pages.addWidget(page)
+
+    def open_history_selection(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.load_history(row, 0)
+
+    def build_settings(self):
+        page = QWidget()
+        page.setObjectName('page')
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(26, 22, 26, 18)
+        layout.setSpacing(16)
+        layout.addLayout(self.title_row('Settings'))
+        preferences = QFrame()
+        preferences.setObjectName('toolStrip')
+        options = QGridLayout(preferences)
+        options.setContentsMargins(16, 12, 16, 14)
+        options.setSpacing(10)
         self.theme_selector = ComboBox()
         for title, key in [('هماهنگ با سیستم', 'system'), ('روشن', 'light'), ('تاریک', 'dark')]:
             self.theme_selector.addItem(title, key)
         self.theme_selector.setCurrentIndex(self.theme_selector.findData(self.theme_choice))
         self.theme_selector.currentIndexChanged.connect(self.theme_changed)
-        navigation.addWidget(self.theme_selector)
-        navigation.addWidget(label('زبان رابط کاربری', 'muted'))
         self.interface_language = ComboBox()
         self.interface_language.setProperty('localeSelector', True)
-        self.interface_language.setAccessibleName('Interface language')
-        self.interface_language.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         for code, native in UI_LANGUAGES:
             self.interface_language.addItem(native, code)
         self.interface_language.setCurrentIndex(self.interface_language.findData(self.ui_language))
         self.interface_language.currentIndexChanged.connect(self.interface_changed)
-        navigation.addWidget(self.interface_language)
-        navigation.addWidget(button('درباره و مجوزها', self.about, 'link'))
-        version = label('Voxriva 2.1', 'muted')
-        version.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        navigation.addWidget(version)
-        outer.addWidget(rail)
-        self.pages = QStackedWidget()
-        outer.addWidget(self.pages, 1)
-        workspace = QWidget()
-        workspace.setObjectName('page')
-        main = QVBoxLayout(workspace)
-        main.setContentsMargins(24, 24, 24, 22)
-        main.setSpacing(16)
-        heading_row = QHBoxLayout()
-        headings = QVBoxLayout()
-        headings.setSpacing(4)
-        headings.addWidget(label('از گفتن تا نوشتن', 'eyebrow'))
-        headings.addWidget(label('بگذار صدایت بنویسد.', 'heading'))
-        headings.addWidget(label('فایل صوتی یا ضبط زنده؛ متن خام، خصوصی و به زبان خودتان.', 'muted'))
-        heading_row.addLayout(headings, 1)
-        heading_row.addWidget(label('آفلاین و خصوصی', 'badge'))
-        main.addLayout(heading_row)
-        settings_panel = QFrame()
-        settings_panel.setObjectName('settings')
-        config = QVBoxLayout(settings_panel)
-        config.setContentsMargins(16, 12, 16, 10)
-        config.setSpacing(8)
-        fields = QGridLayout()
-        fields.setHorizontalSpacing(12)
-        self.language = ComboBox()
-        self.language.setProperty('speechSelector', True)
-        self.language.setAccessibleName('زبان گفتار')
-        for item in LANGUAGES:
-            self.language.addItem(item['title'], item['code'])
-        self.language.currentIndexChanged.connect(self.language_changed)
-        self.model = ComboBox()
-        self.model.setAccessibleName('مدل تشخیص گفتار')
-        self.model.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.model.currentIndexChanged.connect(self.selection_changed)
-        self.mode = ComboBox()
-        self.mode.setAccessibleName('کیفیت پردازش')
-        self.mode.addItem('دقت بیشتر', 5)
-        self.mode.addItem('سریع‌تر', 1)
-        for col, (title, widget) in enumerate([('زبان گفتار', self.language), ('مدل', self.model), ('حالت پردازش', self.mode)]):
-            fields.addWidget(label(title, 'muted'), 0, col)
-            fields.addWidget(widget, 1, col)
-        fields.setColumnStretch(0, 3)
-        fields.setColumnStretch(1, 4)
-        fields.setColumnStretch(2, 2)
-        config.addLayout(fields)
-        readiness = QHBoxLayout()
-        self.model_notice = label('وضعیت مدل در حال بررسی است.', 'muted')
-        readiness.addWidget(self.model_notice, 1)
-        self.library_button = button('مدیریت مدل‌ها', self.open_selected_library, 'link')
-        self.library_button.setMinimumHeight(30)
-        readiness.addWidget(self.library_button)
-        self.advanced_button = button('گزینه‌های پردازش', self.toggle_processing_options, 'link')
-        self.advanced_button.setCheckable(True)
-        self.advanced_button.setMinimumHeight(30)
-        readiness.addWidget(self.advanced_button)
-        config.addLayout(readiness)
-        self.processing_options = QWidget()
-        extra = QGridLayout(self.processing_options)
-        extra.setContentsMargins(0, 2, 0, 0)
-        extra.setHorizontalSpacing(12)
-        self.compute_device = ComboBox()
-        self.compute_device.setAccessibleName('Processing device')
-        self.compute_device.addItem('خودکار؛ در صورت خطا CPU', 'auto')
-        self.compute_device.addItem('CPU', 'cpu')
-        self.compute_device.addItem('NVIDIA CUDA', 'cuda')
-        self.compute_device.addItem('NPU؛ در صورت ناسازگاری CPU', 'npu')
-        index = self.compute_device.findData(self.saved_settings.get('device', 'auto'))
-        self.compute_device.setCurrentIndex(max(0, index))
-        self.chunk_seconds = ComboBox()
-        self.chunk_seconds.setAccessibleName('Audio chunk duration')
-        for seconds in [10, 15, 20, 25, 30]:
-            self.chunk_seconds.addItem(f'{seconds} s', seconds)
-        index = self.chunk_seconds.findData(self.saved_settings.get('chunk_seconds', 20))
-        self.chunk_seconds.setCurrentIndex(index if index >= 0 else 2)
-        self.compute_device.currentIndexChanged.connect(self.compute_choice_changed)
-        self.chunk_seconds.currentIndexChanged.connect(lambda *_: self.save_settings())
-        extra.addWidget(label('دستگاه پردازش', 'muted'), 0, 0)
-        extra.addWidget(label('مدت هر بخش صوت', 'muted'), 0, 1)
-        extra.addWidget(self.compute_device, 1, 0)
-        extra.addWidget(self.chunk_seconds, 1, 1)
-        self.compute_notice = label('سازگاری شتاب‌دهنده هنگام اجرا بررسی می‌شود؛ مدل‌ها خودکار دانلود نمی‌شوند.', 'muted')
-        extra.addWidget(self.compute_notice, 2, 0, 1, 2)
-        config.addWidget(self.processing_options)
-        self.processing_options.hide()
-        main.addWidget(settings_panel)
-        body = QHBoxLayout()
-        body.setSpacing(16)
-        inputs = QWidget()
-        inputs.setMaximumWidth(330)
-        input_layout = QVBoxLayout(inputs)
-        input_layout.setContentsMargins(0, 0, 0, 0)
-        input_layout.setSpacing(14)
-        record_card, record = self.card('ضبط مستقیم', '')
-        record.setContentsMargins(16, 14, 16, 14)
-        record.setSpacing(8)
-        microphone_row = QHBoxLayout()
-        microphone_row.setSpacing(8)
-        self.devices = ComboBox()
-        self.devices.setAccessibleName('انتخاب میکروفون')
-        self.devices.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.devices.setMinimumContentsLength(12)
-        self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        microphone_row.addWidget(self.devices, 1)
-        self.refresh_button = button('', self.refresh_devices, symbol='refresh')
-        self.refresh_button.setFixedSize(44, 44)
-        self.refresh_button.setToolTip('بازخوانی میکروفون‌ها')
-        microphone_row.addWidget(self.refresh_button)
-        record.addLayout(microphone_row)
-        self.wave = Waveform()
-        self.wave.setMinimumHeight(26)
-        self.wave.setMaximumHeight(30)
-        record.addWidget(self.wave, 1)
-        self.record_button = button('شروع ضبط', self.toggle_recording, 'primary', 'mic')
-        record.addWidget(self.record_button)
-        input_layout.addWidget(record_card, 1)
-        file_card, files = self.card('فایل آماده دارید؟', '')
-        files.setContentsMargins(16, 14, 16, 14)
-        files.setSpacing(8)
-        self.source_name = label('هنوز فایلی انتخاب نشده', 'muted')
-        self.source_name.setMinimumHeight(20)
-        files.addWidget(self.source_name)
-        self.choose_button = button('انتخاب فایل صوتی', self.choose_file, symbol='file')
-        self.choose_button.setToolTip('WAV · MP3 · M4A · OGG\n' + 'فایل را انتخاب کنید یا داخل پنجره رها کنید.')
-        files.addWidget(self.choose_button)
-        input_layout.addWidget(file_card)
-        body.addWidget(inputs, 3)
-        self.result_card = QFrame()
-        self.result_card.setObjectName('resultCard')
-        result = QVBoxLayout(self.result_card)
-        result.setContentsMargins(18, 18, 18, 16)
-        result.setSpacing(12)
-        result_header = QHBoxLayout()
-        result_header.addWidget(label('متن شما', 'cardTitle'), 1)
-        self.result_model = label('خروجی خام مدل', 'muted')
-        self.result_model.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        result_header.addWidget(self.result_model)
-        result.addLayout(result_header)
-        self.text = QTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setAccessibleName('متن خام خروجی مدل')
-        self.text.setPlaceholderText('اینجا، صدای شما به کلمات تبدیل می‌شود…\n\nبرای شروع، یک فایل انتخاب کنید یا ضبط را بزنید.')
-        option = self.text.document().defaultTextOption()
-        option.setTextDirection(Qt.LayoutDirection.LayoutDirectionAuto)
-        self.text.document().setDefaultTextOption(option)
-        result.addWidget(self.text, 1)
-        self.metrics_label = label('بدون ترجمه، اصلاح املا یا بازنویسی خودکار.', 'muted')
-        result.addWidget(self.metrics_label)
-        actions = QHBoxLayout()
-        self.copy_button = button('کپی', self.copy_text)
-        self.save_button = button('ذخیره متن', self.save_text)
-        self.retry_button = button('تبدیل دوباره', self.retry, 'accent')
-        self.retry_button.setToolTip('همین فایل را با زبان و مدل انتخاب‌شده دوباره پردازش کنید.')
-        for action in [self.copy_button, self.save_button, self.retry_button]:
-            action.setEnabled(False)
-            actions.addWidget(action)
-        result.addLayout(actions)
-        self.ai_button = button('گفت‌وگو درباره این متن', self.discuss_transcript, 'link')
-        self.ai_button.setEnabled(False)
-        result.addWidget(self.ai_button)
-        body.addWidget(self.result_card, 5)
-        main.addLayout(body, 1)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        footer = QWidget()
-        footer.setObjectName('page')
-        footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(24, 8, 24, 14)
-        footer_layout.setSpacing(8)
-        footer_layout.addWidget(self.progress)
-        status_line = QHBoxLayout()
-        self.status = label('آماده برای شنیدن؛ فایل یا میکروفون را انتخاب کنید.', 'muted')
-        status_line.addWidget(self.status, 1)
-        self.cancel_button = button('توقف تبدیل', self.cancel)
-        self.cancel_button.setEnabled(False)
-        status_line.addWidget(self.cancel_button)
-        footer_layout.addLayout(status_line)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(workspace)
-        studio = QWidget()
-        studio.setObjectName('page')
-        studio_layout = QVBoxLayout(studio)
-        studio_layout.setContentsMargins(0, 0, 0, 0)
-        studio_layout.setSpacing(0)
-        studio_layout.addWidget(scroll, 1)
-        studio_layout.addWidget(footer)
-        self.pages.addWidget(studio)
-        history = QWidget()
-        history.setObjectName('page')
-        hist = QVBoxLayout(history)
-        hist.setContentsMargins(24, 26, 24, 24)
-        hist.setSpacing(16)
-        hist.addWidget(label('کلمات شما، همیشه در دسترس', 'eyebrow'))
-        hist.addWidget(label('تاریخچه و مقایسه', 'heading'))
-        hist.addWidget(label('روی هر نتیجه دوبارکلیک کنید تا متن خام و آمار پردازش نمایش داده شود.', 'muted'))
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(['فایل / ضبط', 'مدل', 'مدت صوت', 'زمان تبدیل', 'تاریخ'])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.cellDoubleClicked.connect(self.load_history)
-        hist.addWidget(self.table, 1)
-        history_actions = QHBoxLayout()
-        history_actions.addWidget(button('بازخوانی', self.refresh_history))
-        history_actions.addWidget(button('پوشه متن‌ها و ضبط‌ها', lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.data)))))
-        hist.addLayout(history_actions)
-        self.pages.addWidget(history)
-        self.build_library()
-        from ai_panel import AIPage
-        self.ai_page = AIPage(lambda: self.raw_text, parent=self)
-        self.pages.addWidget(self.ai_page)
+        self.field(options, 0, 'ظاهر برنامه', self.theme_selector)
+        self.field(options, 1, 'زبان رابط کاربری', self.interface_language)
+        layout.addWidget(preferences)
+        updates = QFrame()
+        updates.setObjectName('toolStrip')
+        update_row = QHBoxLayout(updates)
+        update_row.setContentsMargins(16, 10, 16, 10)
+        update_row.addWidget(label('Updates', 'cardTitle'))
+        update_row.addWidget(label(self.version_text, 'muted'), 1)
+        update_row.addWidget(button('Check for updates', self.open_updates, 'secondary', 'refresh'))
+        layout.addWidget(updates)
+        layout.addWidget(button('درباره و مجوزها', self.about, 'quiet'), 0, Qt.AlignmentFlag.AlignLeading)
+        layout.addStretch()
+        self.pages.addWidget(page)
 
+    def update_controller(self):
+        if self.updates is None:
+            from update_panel import UpdateController
+            self.updates = UpdateController(self, request_close=self.close_for_update)
+            self.updates.available.connect(lambda version: self.update_indicator.show())
+        return self.updates
 
-    def card(self, title, description):
-        card = QFrame()
-        card.setObjectName('card')
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
-        layout.addWidget(label(title, 'cardTitle'))
-        if description:
-            layout.addWidget(label(description, 'muted'))
-        return card, layout
+    def open_updates(self):
+        self.update_controller().open_dialog()
+
+    def close_for_update(self):
+        chat_active = getattr(self.ai_page, '_active', lambda: False)
+        return not (self.busy or self.recording or chat_active()) and self.close()
+
 
     def show_page(self, index):
+        focus = QApplication.focusWidget()
         self.pages.setCurrentIndex(index)
-        self.studio_nav.setChecked(index == 0)
-        self.history_nav.setChecked(index == 1)
-        self.library_nav.setChecked(index == 2)
-        self.ai_nav.setChecked(index == 3)
+        for page, navigation in enumerate(self.navigation):
+            navigation.setChecked(index == page)
+        if focus in self.navigation:
+            self.navigation[index].setFocus(Qt.FocusReason.OtherFocusReason)
         self.brand_label.update()
         if index == 1:
             self.refresh_history()
@@ -688,6 +675,9 @@ class Studio(QMainWindow):
         self.processing_options.setVisible(bool(checked))
 
     def refresh_compute_options(self):
+        if not self.model.currentData():
+            self.compute_choice_changed()
+            return
         try:
             from compute_devices import device_options
             options = device_options(self.model.currentData(), probe=False)
@@ -702,13 +692,15 @@ class Studio(QMainWindow):
 
     def compute_choice_changed(self, *args):
         key = self.compute_device.currentData()
+        model = get_model(self.model.currentData()) if self.model.currentData() else {}
         notices = {
             'auto': 'سازگاری شتاب‌دهنده هنگام اجرا بررسی می‌شود؛ مدل‌ها خودکار دانلود نمی‌شوند.',
             'cpu': 'پردازش محلی روی CPU انجام می‌شود.',
             'cuda': 'GPU به درایور و محیط CUDA سازگار نیاز دارد؛ در صورت خطا پردازش روی CPU ادامه می‌یابد.',
             'npu': 'NPU به مدل و محیط OpenVINO سازگار نیاز دارد؛ در صورت ناسازگاری CPU استفاده می‌شود.',
         }
-        self.compute_notice.setText(notices.get(key, notices['auto']))
+        notice = 'این مدل همیشه روی CPU اجرا می‌شود.' if model.get('cpu_only') else notices.get(key, notices['auto'])
+        self.compute_notice.setText(notice)
         detail = self.compute_device.itemData(self.compute_device.currentIndex(), Qt.ItemDataRole.ToolTipRole)
         if detail:
             self.compute_notice.setToolTip(detail)
@@ -723,30 +715,35 @@ class Studio(QMainWindow):
         if self.theme_choice == 'system':
             self.apply_theme()
 
+    def color_action_icon(self, widget):
+        symbol = widget.property('symbol')
+        if not symbol:
+            return
+        colors = COLORS[self.resolved_theme]
+        role = {'primary': 'action_ink', 'accent': 'brand', 'link': 'brand'}.get(
+            widget.objectName(), 'muted')
+        artwork = icon(symbol, colors[role])
+        artwork.addPixmap(icon(symbol, colors['disabled_ink']).pixmap(32, 32), QIcon.Mode.Disabled)
+        widget.setIcon(artwork)
+
     def apply_theme(self):
         self.resolved_theme = resolve_theme(self.theme_choice, QApplication.styleHints().colorScheme())
-        direction = Qt.LayoutDirection.RightToLeft if self.ui_language in RTL_LANGUAGES else Qt.LayoutDirection.LeftToRight
-        alignment = 'right' if direction == Qt.LayoutDirection.RightToLeft else 'left'
-        self.setStyleSheet(theme_stylesheet(STYLE, self.resolved_theme) + f'\nQPushButton#nav {{text-align:{alignment};}}')
+        colors = COLORS[self.resolved_theme]
+        self.setPalette(native_palette(self.resolved_theme))
+        self.setStyleSheet(theme_stylesheet(self.resolved_theme, rtl=self.ui_language in RTL_LANGUAGES))
+        self.transcript_glyph.setPixmap(icon('wave', colors['brand']).pixmap(30, 30))
         self.wave.dark = self.resolved_theme == 'dark'
         self.wave.update()
         for widget in self.findChildren(LocalButton):
-            symbol = widget.property('symbol')
-            if symbol:
-                color = '#101322' if widget.objectName() == 'primary' and self.resolved_theme == 'dark' else (
-                    '#ffffff' if widget.objectName() == 'primary' else '#b8c3d6' if self.resolved_theme == 'dark' else '#66748c')
-                widget.setIcon(icon(symbol, color))
+            self.color_action_icon(widget)
         if self.recording:
-            self.record_button.setIcon(icon('stop', '#ffb3c8' if self.resolved_theme == 'dark' else '#a42d4d'))
-        image = self.brand_pixmap().scaled(256, 192, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        image.setDevicePixelRatio(2)
-        self.brand_label.setPixmap(image)
+            self.record_button.setIcon(icon('stop', colors['danger']))
         if self.resolved_theme == 'dark':
             effect = self.brand_label.graphicsEffect()
             if not isinstance(effect, QGraphicsColorizeEffect):
                 effect = QGraphicsColorizeEffect(self.brand_label)
                 self.brand_label.setGraphicsEffect(effect)
-            effect.setColor(QColor('#eef2ff'))
+            effect.setColor(QColor(colors['text']))
             effect.setStrength(1.0)
         else:
             # Qt owns/deletes the previous effect when it is detached.
@@ -754,6 +751,7 @@ class Studio(QMainWindow):
         self.setWindowIcon(QIcon(self.brand_pixmap(True)))
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'apply_theme'):
             self.ai_page.apply_theme(self.resolved_theme)
+        self.refresh_model_picker()
 
     def interface_changed(self, *args):
         code = self.interface_language.currentData()
@@ -770,11 +768,12 @@ class Studio(QMainWindow):
         QApplication.instance().setLayoutDirection(direction)
         self.setLayoutDirection(direction)
         self.apply_theme()
-        self.setWindowTitle(tr('Voxriva — استودیوی گفتار آفلاین'))
+        self.setWindowTitle(tr('Avunote — استودیوی گفتار آفلاین'))
         for widget in self.findChildren(LocalLabel) + self.findChildren(LocalButton):
             widget.retranslate()
         for widget in self.findChildren(ComboBox):
             widget.retranslate()
+        self.refresh_model_picker()
         for item in self.download_widgets.values():
             bar = item['bar']
             source = bar.property('sourceAccessibleName')
@@ -795,6 +794,8 @@ class Studio(QMainWindow):
         self.interface_language.repaint()
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'retranslate_ui'):
             self.ai_page.retranslate_ui()
+        if self.updates is not None:
+            self.updates.retranslate_ui()
         self.update()
 
     def update_transcript_direction(self, language=None):
@@ -809,44 +810,140 @@ class Studio(QMainWindow):
     def language_changed(self, *args):
         if not hasattr(self, 'model_notice'):
             return
-        previous = self.model.currentData()
-        self.model.blockSignals(True)
-        self.model.clear()
-        for item in models_for_language(self.language.currentData()):
-            self.model.addItem(f'{item["title"]}  ·  {item["size"]}', item['key'])
-            self.model.setItemData(self.model.count()-1, item['detail'], Qt.ItemDataRole.ToolTipRole)
-        index = self.model.findData(previous)
-        if index < 0:
-            # Base Full for AZB; Base balances speed/download size for other languages.
-            preferred = 'whisper-base-full' if self.language.currentData() == 'azb' else 'multilingual-base'
-            index = self.model.findData(preferred)
-        self.model.setCurrentIndex(max(0, index))
-        self.model.blockSignals(False)
+        previous = self.model.currentData() or self.saved_settings.get('model')
+        with QSignalBlocker(self.model):
+            self.model.clear()
+            for item in models_for_language(self.language.currentData()):
+                key = item['key']
+                self.model_readiness[key] = find_local_model(key) is not None
+                self.model.addItem(f'{item["title"]}  ·  {item["size"]}', key)
+            self.model.setCurrentIndex(-1)
+            self.refresh_model_picker(preferred=previous)
         self.selection_changed()
 
+    @staticmethod
+    def model_status(item, snapshot, ready):
+        state = snapshot.get('status', 'idle')
+        if ready:
+            state = 'completed'
+        elif not isinstance(state, str) or state == 'completed' or state not in MODEL_STATES:
+            # A download receipt can survive after the actual files are removed.
+            state = 'idle'
+        try:
+            done = float(snapshot.get('bytes_done', 0) or 0)
+            total = float(snapshot.get('bytes_total', 0) or item['bytes'])
+        except (TypeError, ValueError):
+            done, total = 0., float(item['bytes'])
+        percent = max(0., min(100., 100*done/total)) if total > 0 else 0.
+        return state, done, total, percent
+
+    def refresh_model_picker(self, preferred=None):
+        """Keep the available selection and visible download rows in sync."""
+        combo = self.model
+        combo.setPlaceholderText(tr('هیچ مدل نصب‌شده‌ای نیست'))
+        if not combo.count():
+            combo.set_model_rows((), None, self.resolved_theme)
+            return False
+        before = combo.currentData()
+        active_key = self.downloads.active_key()
+        standard_model = combo.model()
+        activity = None
+        installed = []
+        choices = []
+        with QSignalBlocker(combo):
+            for index in range(combo.count()):
+                key = combo.itemData(index)
+                item = get_model(key)
+                ready = self.model_readiness.get(key, False)
+                state, _, _, percent = self.model_status(item, self.downloads.snapshot(key), ready)
+                status = MODEL_STATES[state]
+                if state in DOWNLOAD_IN_PROGRESS | {'paused'}:
+                    status += f'  ·  {percent:.0f}%'
+                if state in DOWNLOAD_IN_PROGRESS:
+                    activity = status
+                row = standard_model.item(index)
+                if row.isEnabled() != ready:
+                    row.setEnabled(ready)
+                    row.setSelectable(ready)
+                if ready:
+                    installed.append(index)
+                title = combo.itemData(index, ComboBox.SOURCE_ROLE)
+                text = tr(title if ready else title + '  ·  ' + status)
+                if row.text() != text:
+                    row.setText(text)
+                detail = tr(item['detail'])
+                translated_status = tr(status)
+                tooltip = detail + '\n' + translated_status
+                if row.toolTip() != tooltip:
+                    row.setToolTip(tooltip)
+                choices.append(ModelChoice(key, tr(title), detail, translated_status, state, ready, percent))
+
+            # An in-progress recording or transcription keeps the model it started with.
+            if not (self.busy or self.recording) or before is None:
+                default = 'whisper-base-full' if self.language.currentData() == 'azb' else 'multilingual-base'
+                preferred_keys = (preferred, before, self.saved_settings.get('model'), default)
+                selection = installed[0] if installed else -1
+                for key in preferred_keys:
+                    index = combo.findData(key)
+                    if index in installed:
+                        selection = index
+                        break
+                if combo.currentIndex() != selection:
+                    combo.setCurrentIndex(selection)
+
+        combo.set_model_rows(choices, active_key, self.resolved_theme)
+        key = combo.currentData()
+        ready = self.model_readiness.get(key, False)
+        metadata = get_model(key) if key else {}
+        if ready:
+            notice = 'مدل آماده است؛ تبدیل بدون اینترنت انجام می‌شود.'
+            if metadata.get('automatic_language'):
+                notice += '  ·  زبان گفتار به‌صورت خودکار تشخیص داده می‌شود.'
+            tone = 'ready'
+        elif activity:
+            notice = activity + '  ·  تبدیل گفتار پس از آماده‌شدن مدل فعال می‌شود.'
+            tone = 'info'
+        else:
+            notice = 'Download a model using the icon in the list.'
+            tone = 'warning'
+        if self.model_notice.source_text != notice:
+            self.model_notice.setText(notice)
+        if self.model_notice.property('tone') != tone:
+            self.model_notice.setProperty('tone', tone)
+            self.model_notice.style().unpolish(self.model_notice)
+            self.model_notice.style().polish(self.model_notice)
+        self.library_button.setVisible(not ready)
+        ready_prompt = 'آماده برای شنیدن؛ فایل یا میکروفون را انتخاب کنید.'
+        waiting_prompt = 'تبدیل گفتار پس از آماده‌شدن مدل فعال می‌شود.'
+        missing_prompt = 'ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.'
+        idle_prompts = {'', ready_prompt, waiting_prompt, missing_prompt,
+                        'مدل آماده است؛ فایل صوتی را انتخاب کنید یا ضبط را شروع کنید.'}
+        if hasattr(self, 'status') and self.status.source_text in idle_prompts:
+            footer = ready_prompt if ready else ''
+            if self.status.source_text != footer:
+                self.status.setText(footer)
+        return before != key
+
     def selection_changed(self, *args):
-        if not hasattr(self, 'model_notice') or not self.model.currentData():
+        if not hasattr(self, 'model_notice'):
             return
-        key = self.model.currentData()
-        ready = find_local_model(key) is not None
-        self.model_readiness[key] = ready
-        self.model_notice.setText('مدل آماده است؛ تبدیل بدون اینترنت انجام می‌شود.' if ready else
-                                  'این مدل هنوز روی دستگاه نیست؛ از کتابخانه دانلود کنید یا مدل محلی را معرفی کنید.')
-        self.library_button.setText('کتابخانه مدل‌ها' if ready else 'دریافت مدل')
+        self.refresh_model_picker()
         self.controls()
         self.refresh_compute_options()
         self.update_transcript_direction()
-        self.save_settings()
 
     def save_settings(self):
-        if not hasattr(self, 'language') or not self.model.currentData():
+        if not hasattr(self, 'compute_device') or not hasattr(self, 'chunk_seconds'):
             return False
         payload = dict(self.saved_settings)
-        payload.update({'language': self.language.currentData(), 'model': self.model.currentData(),
+        payload.update({'language': self.language.currentData(),
                         'ui_language': self.ui_language, 'theme': self.theme_choice,
                         'star_prompt_seen': self.star_prompt_seen,
                         'device': self.compute_device.currentData(),
                         'chunk_seconds': self.chunk_seconds.currentData()})
+        key = self.model.currentData()
+        if key and self.model_readiness.get(key):
+            payload['model'] = key
         try:
             atomic_write_text(self.data/'settings.json', json.dumps(payload, ensure_ascii=False, indent=2))
             self.saved_settings = payload
@@ -864,75 +961,82 @@ class Studio(QMainWindow):
         page = QWidget()
         page.setObjectName('page')
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 22)
+        layout.setContentsMargins(26, 22, 26, 18)
         layout.setSpacing(14)
-        title_row = QHBoxLayout()
-        title_text = QVBoxLayout()
-        title_text.addWidget(label('مرز زبان را بردارید', 'eyebrow'))
-        title_text.addWidget(label('به زبان خودتان.', 'heading'))
-        title_text.addWidget(label('زبان را انتخاب کنید، مدل مناسب را دریافت کنید و آفلاین بنویسید.', 'muted'))
-        title_row.addLayout(title_text, 1)
-        title_row.addWidget(label(f'{len(LANGUAGES)} زبان در دسترس', 'badge'))
-        layout.addLayout(title_row)
+        local = button('افزودن مدل محلی', self.import_local_models, 'quiet', 'folder')
+        layout.addLayout(self.title_row('کتابخانه مدل‌ها', local))
         filters = QHBoxLayout()
-        filters.addWidget(label('زبان موردنظر'))
+        filters.setSpacing(10)
+        filter_label = label('زبان گفتار', 'fieldLabel')
         self.library_language = ComboBox()
         self.library_language.setProperty('speechSelector', True)
-        self.library_language.setAccessibleName('فیلتر زبان کتابخانه')
+        self.library_language.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.library_language.setMinimumContentsLength(14)
         for item in LANGUAGES:
             self.library_language.addItem(item['title'], item['code'])
-        self.library_language.currentIndexChanged.connect(self.rebuild_library)
-        filters.addWidget(self.library_language, 1)
-        filters.addWidget(button('افزودن مدل محلی', self.import_local_models, symbol='file'))
+        filter_label.setBuddy(self.library_language)
+        filters.addWidget(filter_label)
+        filters.addWidget(self.library_language)
+        filters.addStretch()
         layout.addLayout(filters)
-        self.library_note = label('مدل‌های آذربایجانی این بخش، مخصوص گونه رایج در ایران هستند.', 'muted')
-        layout.addWidget(self.library_note)
         self.library_scroll = QScrollArea()
         self.library_scroll.setWidgetResizable(True)
         self.library_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.library_body = QWidget()
         self.library_body.setObjectName('page')
-        self.library_cards = QGridLayout(self.library_body)
+        self.library_cards = QVBoxLayout(self.library_body)
         self.library_cards.setContentsMargins(0, 0, 4, 0)
-        self.library_cards.setSpacing(14)
-        self.library_cards.setColumnStretch(0, 1)
-        self.library_cards.setColumnStretch(1, 1)
+        self.library_cards.setSpacing(8)
         self.library_scroll.setWidget(self.library_body)
         layout.addWidget(self.library_scroll, 1)
-        self.library_footer = label('مدل‌ها یک بار دانلود می‌شوند. پردازش فایل‌ها و ضبط‌های شما همیشه روی همین دستگاه انجام می‌شود.', 'muted')
+        self.library_footer = label('', 'muted')
+        self.library_footer.hide()
         layout.addWidget(self.library_footer)
         self.pages.addWidget(page)
+        self.library_language.currentIndexChanged.connect(self.rebuild_library)
         self.rebuild_library()
 
     def rebuild_library(self, *args):
         while self.library_cards.count():
-            item = self.library_cards.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().deleteLater()
+            entry = self.library_cards.takeAt(0)
+            if entry.widget():
+                entry.widget().hide()
+                entry.widget().deleteLater()
         self.download_widgets = {}
         language = self.library_language.currentData()
-        self.library_note.setText('مدل‌های اختصاصی برای آذربایجانی رایج در ایران؛ به زبان خودتان و با خط اصلی مدل.'
-                                  if language == 'azb' else
-                                  'این مدل‌های چندزبانه روی CPU اجرا می‌شوند. با تغییر زبان، مدل دانلودشده دوباره دریافت نمی‌شود؛ دقت به زبان و کیفیت صدا بستگی دارد.')
-        for index, item in enumerate(models_for_language(language)):
+        for item in models_for_language(language):
             key = item['key']
             card = QFrame()
             card.setObjectName('modelCard')
             content = QVBoxLayout(card)
-            content.setContentsMargins(16, 14, 16, 14)
+            content.setContentsMargins(14, 12, 14, 12)
             content.setSpacing(8)
-            headline = QHBoxLayout()
-            heading = label(item['title'].replace('AZB · ', '').replace(' · چندزبانه', ''), 'libraryTitle')
-            heading.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-            headline.addWidget(heading, 1)
-            size = label(item['size'], 'badge')
-            size.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-            headline.addWidget(size)
-            content.addLayout(headline)
-            description = label(item['detail'], 'muted')
-            description.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            content.addWidget(description)
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            summary = QVBoxLayout()
+            summary.setSpacing(3)
+            summary.addWidget(label(item['title'].replace('AZB · ', '').replace(' · چندزبانه', ''), 'libraryTitle'))
+            summary.addWidget(label(' · '.join(filter(None, (item.get('family'), item['size']))), 'muted'))
+            status = label('دانلود نشده', 'modelStatus')
+            status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            summary.addWidget(status)
+            row.addLayout(summary, 1)
+
+            start = button('دانلود مدل', lambda checked=False, k=key: self.download_action(k, 'start'),
+                           'secondary', 'download')
+            pause = button('توقف موقت', lambda checked=False, k=key: self.download_action(k, 'pause'), 'quiet')
+            cancel = button('لغو دانلود', lambda checked=False, k=key: self.download_action(k, 'cancel'), 'quiet')
+            use = button('استفاده از مدل', lambda checked=False, k=key: self.use_model(k), 'accent')
+            disclosure = button('', lambda: None, 'quiet', 'more')
+            disclosure.setFixedWidth(44)
+            disclosure.setCheckable(True)
+            disclosure.setToolTip('جزئیات مدل و مجوزها')
+            disclosure.setAccessibleName(tr('جزئیات مدل و مجوزها'))
+            for action in (start, pause, cancel, use, disclosure):
+                self.color_action_icon(action)
+                row.addWidget(action, 0, Qt.AlignmentFlag.AlignVCenter)
+            content.addLayout(row)
+
             bar = QProgressBar()
             bar.setObjectName('downloadProgress')
             bar.setRange(0, 1000)
@@ -940,40 +1044,30 @@ class Studio(QMainWindow):
             bar.setProperty('sourceAccessibleName', f'پیشرفت دانلود {item["title"]}')
             bar.setAccessibleName(tr(f'پیشرفت دانلود {item["title"]}'))
             content.addWidget(bar)
-            status = label('آماده دریافت', 'muted')
-            status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            content.addWidget(status)
-            actions = QHBoxLayout()
-            start = button('دانلود مدل', lambda checked=False, k=key: self.download_action(k, 'start'), 'primary', 'download')
-            pause = button('توقف موقت', lambda checked=False, k=key: self.download_action(k, 'pause'))
-            cancel = button('لغو دانلود', lambda checked=False, k=key: self.download_action(k, 'cancel'))
-            use = button('استفاده از مدل', lambda checked=False, k=key: self.use_model(k), 'accent')
-            for action in [start, pause, cancel, use]:
-                actions.addWidget(action)
-            content.addLayout(actions)
-            disclosure = LocalButton('جزئیات مدل و مجوزها')
-            disclosure.setObjectName('link')
-            disclosure.setCursor(Qt.CursorShape.PointingHandCursor)
-            disclosure.setMinimumHeight(28)
-            disclosure.setCheckable(True)
-            content.addWidget(disclosure)
+
             details = QFrame()
             details.setObjectName('disclosure')
             details_layout = QVBoxLayout(details)
             details_layout.setContentsMargins(10, 8, 10, 8)
+            details_layout.addWidget(label(item['detail'], 'muted'))
             details_layout.addWidget(label(f'مجوز: {item.get("license", "مشاهده در منبع")}  ·  پردازش روی CPU', 'muted'))
+            if item.get('automatic_language'):
+                details_layout.addWidget(label('زبان گفتار به‌صورت خودکار تشخیص داده می‌شود.', 'muted'))
             if item['backend'] == 'transformers':
                 details_layout.addWidget(label('مدل آذربایجانی جنوبی · مؤسسه Kartal Ol', 'muted'))
                 details_layout.addWidget(button('Kartal Ol / GitHub', lambda: QDesktopServices.openUrl(QUrl('https://github.com/Kartalol')), 'link'))
             details_layout.addWidget(button('مشاهده منبع و شرایط مدل', lambda checked=False, url=item['url']: QDesktopServices.openUrl(QUrl(url)), 'link'))
+            if item.get('license_url') and item['license_url'] != item['url']:
+                details_layout.addWidget(button('مشاهده مجوز مدل', lambda checked=False, url=item['license_url']: QDesktopServices.openUrl(QUrl(url)), 'link'))
             details.hide()
             disclosure.toggled.connect(details.setVisible)
             content.addWidget(details)
-            self.library_cards.addWidget(card, index//2, index%2)
+            self.library_cards.addWidget(card)
             self.download_widgets[key] = {'bar': bar, 'status': status, 'start': start, 'pause': pause,
                                           'cancel': cancel, 'use': use}
-        self.library_cards.setRowStretch((len(models_for_language(language))+1)//2, 1)
+        self.library_cards.addStretch(1)
         self.refresh_library()
+
 
     @staticmethod
     def format_bytes(value):
@@ -985,9 +1079,6 @@ class Studio(QMainWindow):
         return f'{value/1000:.0f} KB'
 
     def refresh_library(self):
-        labels = {'idle': 'آماده دریافت', 'resolving': 'آماده‌سازی دانلود', 'downloading': 'در حال دانلود',
-                  'paused': 'متوقف موقت؛ برای ادامه آماده است', 'verifying': 'بررسی صحت فایل‌ها',
-                  'completed': 'آماده استفاده آفلاین', 'cancelled': 'دانلود لغو شد', 'error': 'دانلود کامل نشد'}
         readiness_changed = False
         for item in CATALOG:
             key = item['key']
@@ -999,15 +1090,13 @@ class Studio(QMainWindow):
             if not widgets:
                 continue
             snapshot = self.downloads.snapshot(key)
-            state = 'completed' if ready else snapshot.get('status', 'idle')
-            active = state in {'resolving', 'downloading', 'verifying'}
-            done = float(snapshot.get('bytes_done', 0) or 0)
-            total = float(snapshot.get('bytes_total', item.get('bytes', 0)) or item.get('bytes', 0))
-            percent = max(0., min(100., 100*done/total)) if total else 0.
+            state, done, total, percent = self.model_status(item, snapshot, ready)
+            active = state in DOWNLOAD_IN_PROGRESS
+            widgets['bar'].setVisible(active or state == 'paused')
             widgets['bar'].setRange(0, 0 if state == 'resolving' else 1000)
             if state != 'resolving':
                 widgets['bar'].setValue(1000 if ready else int(percent*10))
-            status = labels.get(state, state)
+            status = MODEL_STATES[state]
             if active or state == 'paused':
                 status += f'  ·  {percent:.1f}%  ·  {self.format_bytes(done)} / {self.format_bytes(total)}'
                 speed = snapshot.get('speed_bps', 0) or 0
@@ -1021,8 +1110,15 @@ class Studio(QMainWindow):
                 status += '\n' + str(snapshot.get('error') or 'اتصال و فضای دیسک را بررسی کنید؛ امکان تلاش دوباره وجود دارد.')
             if ready:
                 status += '  ·  نیازی به دانلود دوباره نیست'
-            widgets['status'].setText(status)
-            widgets['start'].setVisible(not ready)
+            status_label = widgets['status']
+            if status_label.source_text != status:
+                status_label.setText(status)
+            tone = 'ready' if ready else 'info' if active else 'error' if state == 'error' else 'warning'
+            if status_label.property('tone') != tone:
+                status_label.setProperty('tone', tone)
+                status_label.style().unpolish(status_label)
+                status_label.style().polish(status_label)
+            widgets['start'].setVisible(not ready and not active and state != 'cancelled-pending')
             widgets['start'].setText('ادامه دانلود' if state in {'paused', 'error'} else 'دانلود مدل')
             widgets['start'].setEnabled(not active and state != 'cancelled-pending')
             widgets['pause'].setVisible(active)
@@ -1031,7 +1127,8 @@ class Studio(QMainWindow):
             widgets['cancel'].setEnabled(active or state == 'paused')
             widgets['use'].setVisible(ready)
             widgets['use'].setEnabled(ready and not self.busy and not self.recording)
-        if readiness_changed and hasattr(self, 'model_notice'):
+        selection_changed = self.refresh_model_picker()
+        if self.model.count() and (readiness_changed or selection_changed):
             self.selection_changed()
 
     def download_action(self, key, action):
@@ -1046,14 +1143,16 @@ class Studio(QMainWindow):
         self.refresh_library()
 
     def use_model(self, key):
-        if self.busy or self.recording:
+        if self.busy or self.recording or find_local_model(key) is None:
             return
         language = self.library_language.currentData()
         index = self.language.findData(language)
         self.language.setCurrentIndex(index)
+        self.model_readiness[key] = True
+        self.refresh_model_picker(preferred=key)
         index = self.model.findData(key)
-        if index >= 0:
-            self.model.setCurrentIndex(index)
+        if index < 0 or self.model.currentData() != key:
+            return
         self.selection_changed()
         self.show_page(0)
         self.status.setText('مدل آماده است؛ فایل صوتی را انتخاب کنید یا ضبط را شروع کنید.')
@@ -1065,6 +1164,7 @@ class Studio(QMainWindow):
         try:
             count = register_local_root(Path(directory))
             self.library_footer.setText(f'{count} مدل محلی شناسایی شد؛ فایل‌ها جابه‌جا یا دوباره دانلود نمی‌شوند.')
+            self.library_footer.show()
         except Exception as exc:
             self.error(str(exc))
         self.refresh_library()
@@ -1095,18 +1195,55 @@ class Studio(QMainWindow):
 
     def controls(self):
         idle = not self.busy and not self.recording
-        ready = self.model_readiness.get(self.model.currentData(), False)
+        model_key = self.model.currentData()
+        ready = self.model_readiness.get(model_key, False)
+        model = get_model(model_key) if model_key else {}
         for item in [self.language, self.model, self.mode, self.devices, self.refresh_button,
                      self.compute_device, self.chunk_seconds]:
             item.setEnabled(idle)
+        self.compute_device.setEnabled(idle and not model.get('cpu_only'))
+        self.mode.setToolTip(tr('این مدل روش تشخیص ثابتی دارد. این گزینه فقط روی بخش‌بندی صوت اثر می‌گذارد.')
+                             if model.get('fixed_decoder') else '')
         self.choose_button.setEnabled(idle and ready)
         self.record_button.setEnabled(not self.busy and (ready or self.recording) and self.devices.currentData() is not None)
         self.retry_button.setEnabled(idle and ready and self.last_audio is not None)
         self.cancel_button.setEnabled(self.busy and not self.cancelled)
+        self.cancel_button.setVisible(self.busy)
+        self.progress.setVisible(self.busy)
+        self.wave.setVisible(self.recording)
         self.ai_button.setEnabled(bool(self.raw_text))
+        if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'set_speech_settings'):
+            model_text = self.model.currentText() or tr('هیچ مدل نصب‌شده‌ای نیست')
+            summary = ' · '.join(filter(None, [self.language.currentText(), model_text, self.devices.currentText()]))
+            self.ai_page.set_speech_settings(summary, ready=ready and idle,
+                                            microphone_available=self.devices.currentData() is not None)
+
+    def record_chat_voice(self):
+        if self.recording and self.recording_target != 'ai':
+            return
+        self.toggle_recording(target='ai')
+
+    def choose_chat_audio(self):
+        if self.busy or self.recording:
+            return
+        if not self.model_readiness.get(self.model.currentData(), False):
+            self.open_selected_library()
+            return
+        path, _ = QFileDialog.getOpenFileName(self, tr('انتخاب ویس'), '', 'Audio (*.wav *.mp3 *.m4a *.ogg)')
+        if path:
+            self.start_transcription(Path(path), target='ai')
+
+    def active_output(self):
+        return self.ai_output if self.transcription_target == 'ai' else self.output
 
     def choose_file(self):
         if self.busy or self.recording:
+            return
+        if self.pages.currentIndex() == 3:
+            self.choose_chat_audio()
+            return
+        if not self.model_readiness.get(self.model.currentData(), False):
+            self.open_selected_library()
             return
         path, _ = QFileDialog.getOpenFileName(self, tr('انتخاب ویس'), '', 'Audio (*.wav *.mp3 *.m4a *.ogg)')
         if path:
@@ -1116,41 +1253,54 @@ class Studio(QMainWindow):
         if self.last_audio:
             self.start_transcription(self.last_audio)
 
-    def start_transcription(self, audio):
+    def start_transcription(self, audio, target='studio'):
         if self.busy or self.recording:
             return
         if not self.model.currentData() or find_local_model(self.model.currentData()) is None:
             self.status.setText('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.')
+            if target == 'ai':
+                self.ai_page.voice_failed(tr('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.'))
             self.open_selected_library()
             return
         audio = Path(audio)
         if not audio.is_file() or audio.suffix.lower() not in FORMATS:
-            self.error('یک فایل WAV، MP3، M4A یا OGG معتبر انتخاب کنید.')
+            if target == 'ai':
+                self.ai_page.voice_failed(tr('یک فایل WAV، MP3، M4A یا OGG معتبر انتخاب کنید.'))
+            else:
+                self.error('یک فایل WAV، MP3، M4A یا OGG معتبر انتخاب کنید.')
             return
-        self.last_audio = audio.resolve()
+        self.transcription_target = target
         self.run_model = self.model.currentData()
-        self.run_language = self.language.currentData()
-        self.source_name.setProperty('literalText', True)
-        self.source_name.setText(audio.name)
-        self.source_name.setToolTip(str(audio))
-        self.result_model.setText(self.model.currentText())
-        self.output = self.data/'results'/f'{audio.stem}-{self.run_model}-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}.txt'
+        speech_language = self.language.currentData()
+        output = self.data/'results'/f'{audio.stem}-{self.run_model}-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}.txt'
+        if target == 'ai':
+            self.ai_output = output
+            self.ai_page.set_voice_state('transcribing')
+        else:
+            self.last_audio = audio.resolve()
+            self.run_language = speech_language
+            self.source_name.setProperty('literalText', True)
+            self.source_name.setText(audio.name)
+            self.source_name.show()
+            self.source_name.setToolTip(str(audio))
+            self.result_model.setText(self.model.currentText())
+            self.output = output
+            self.raw_text = ''
+            self.ai_button.setEnabled(False)
+            self.text.clear()
+            self.copy_button.setEnabled(False)
+            self.save_button.setEnabled(False)
+            self.show_page(0)
         self.started = time.monotonic()
         self.cancelled = False
-        self.raw_text = ''
-        self.ai_button.setEnabled(False)
-        self.text.clear()
-        self.copy_button.setEnabled(False)
-        self.save_button.setEnabled(False)
         self.progress.setRange(0, 0)
-        self.show_page(0)
         self.busy = True
         if getattr(sys, 'frozen', False):
             command = [sys.executable]
         else:
             command = [sys.executable, str(Path(__file__).resolve().parent/'entrypoint.py')]
-        command += ['--worker', str(self.last_audio), '--output', str(self.output), '--model', self.run_model,
-                    '--beams', str(self.mode.currentData()), '--language', self.run_language,
+        command += ['--worker', str(audio.resolve()), '--output', str(output), '--model', self.run_model,
+                    '--beams', str(self.mode.currentData()), '--language', speech_language,
                     '--device', self.compute_device.currentData(),
                     '--chunk-seconds', str(self.chunk_seconds.currentData())]
         try:
@@ -1160,44 +1310,62 @@ class Studio(QMainWindow):
             self.process = None
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
-            self.error(str(exc))
+            if target == 'ai':
+                self.ai_page.voice_failed(str(exc))
+                self.transcription_target = 'studio'
+            else:
+                self.error(str(exc))
         self.controls()
 
-    def toggle_recording(self):
+    def toggle_recording(self, target='studio'):
         if self.recording:
             self.record_button.setText('در حال پایان ضبط…')
             self.record_button.setEnabled(False)
             self.recorder.stop_event.set()
+            if self.recording_target == 'ai':
+                self.ai_page.set_voice_state('stopping')
             return
         if self.busy or self.devices.currentData() is None:
             return
         if not self.model.currentData() or find_local_model(self.model.currentData()) is None:
+            if target == 'ai':
+                self.ai_page.voice_failed(tr('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.'))
             self.open_selected_library()
             return
         path = self.data/'recordings'/f'voice-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}.wav'
+        self.recording_target = target
         self.recorder = Recorder(self.devices.currentData(), path)
         self.recorder.level.connect(self.wave.push)
         self.recorder.ready.connect(self.record_ready)
         self.recorder.recorded.connect(self.record_finished)
         self.recorder.failed.connect(self.record_error)
         self.recording = True
+        if target == 'ai':
+            self.ai_page.set_voice_state('preparing')
         self.mic_ready = False
         self.started = time.monotonic()
         self.wave.active = True
         self.record_button.setText('آماده‌سازی میکروفون…')
         self.record_button.setObjectName('danger')
-        self.record_button.setIcon(icon('stop', '#ffb3c8' if self.resolved_theme == 'dark' else '#a42d4d'))
+        self.record_button.setIcon(icon('stop', COLORS[self.resolved_theme]['danger']))
         self.record_button.style().unpolish(self.record_button)
         self.record_button.style().polish(self.record_button)
         self.controls()
         self.record_button.setEnabled(False)
-        self.recorder.start()
+        try:
+            self.recorder.start()
+        except Exception as exc:
+            self.record_error(str(exc))
 
     def record_ready(self):
+        if self.closing or not self.recording:
+            return
         self.mic_ready = True
         self.started = time.monotonic()
         self.record_button.setText('پایان ضبط و تبدیل')
         self.record_button.setEnabled(True)
+        if self.recording_target == 'ai':
+            self.ai_page.set_voice_state('recording')
 
     def reset_recording(self):
         self.recording = False
@@ -1206,25 +1374,31 @@ class Studio(QMainWindow):
         self.wave.update()
         self.record_button.setText('شروع ضبط')
         self.record_button.setObjectName('primary')
-        self.record_button.setIcon(icon('mic', '#101322' if self.resolved_theme == 'dark' else '#ffffff'))
+        self.record_button.setIcon(icon('mic', COLORS[self.resolved_theme]['action_ink']))
         self.record_button.style().unpolish(self.record_button)
         self.record_button.style().polish(self.record_button)
         self.controls()
 
     def record_finished(self, path, duration):
-        if self.closing:
+        if self.closing or not self.recording:
             return
+        target = self.recording_target
         self.reset_recording()
-        self.start_transcription(Path(path))
+        self.start_transcription(Path(path), target=target)
 
     def record_error(self, detail):
-        if self.closing:
+        if self.closing or not self.recording:
             return
         self.reset_recording()
+        if self.recording_target == 'ai':
+            self.ai_page.voice_failed(tr(detail))
+            return
         self.status.setText('ضبط انجام نشد؛ میکروفون و اجازه دسترسی در تنظیمات ویندوز را بررسی کنید.')
         self.error(detail)
 
     def tick(self):
+        if self.closing:
+            return
         now = time.monotonic()
         if now - self.last_library_poll > .8:
             self.last_library_poll = now
@@ -1233,6 +1407,8 @@ class Studio(QMainWindow):
             if self.mic_ready:
                 duration = int(time.monotonic()-self.started)
                 self.status.setText(f'در حال ضبط  ·  {duration//60:02d}:{duration%60:02d}  ·  برای تبدیل، پایان ضبط را بزنید.')
+                if self.recording_target == 'ai':
+                    self.ai_page.set_voice_state('recording', f'{duration//60:02d}:{duration%60:02d}')
             else:
                 self.status.setText('در حال آماده‌سازی میکروفون؛ پس از فعال‌شدن دکمه پایان ضبط، صحبت کنید.')
         elif self.busy and self.process:
@@ -1242,7 +1418,7 @@ class Studio(QMainWindow):
                       'fallback': 'بازگشت به CPU'}
             phase = 'آماده‌سازی'
             try:
-                progress = json.loads(read_text_shared(self.output.with_suffix('.progress.json')))
+                progress = json.loads(read_text_shared(self.active_output().with_suffix('.progress.json')))
                 phase = phases.get(progress['phase'], phase)
                 if progress['phase'] == 'transcribing':
                     if isinstance(progress.get('fraction'), (int, float)):
@@ -1265,10 +1441,17 @@ class Studio(QMainWindow):
             except (OSError, ValueError, KeyError):
                 pass
             self.status.setText(f'{phase}  ·  {duration} ثانیه گذشته است  ·  {self.run_model}')
+            if self.transcription_target == 'ai':
+                detail = f'{tr(phase)} · {duration}s'
+                if self.progress.maximum() > 0:
+                    detail += f' · {round(100*self.progress.value()/self.progress.maximum())}%'
+                self.ai_page.set_voice_state('cancelling' if self.cancelled else 'transcribing', detail)
             if self.process.poll() is not None:
                 self.complete()
 
     def complete(self):
+        output = self.active_output()
+        chat_voice = self.transcription_target == 'ai'
         returncode = self.process.returncode
         self.process = None
         self.busy = False
@@ -1276,12 +1459,17 @@ class Studio(QMainWindow):
         if self.cancelled:
             self.progress.setValue(0)
             self.status.setText('تبدیل متوقف شد؛ می‌توانید فایل یا مدل دیگری انتخاب کنید.')
+            if chat_voice:
+                self.ai_page.set_voice_state('idle', tr('تبدیل متوقف شد؛ می‌توانید فایل یا مدل دیگری انتخاب کنید.'))
         else:
             try:
-                metrics = json.loads(read_text_shared(self.output.with_suffix('.metrics.json')))
+                metrics = json.loads(read_text_shared(output.with_suffix('.metrics.json')))
                 if returncode or metrics.get('status') != 'success':
                     raise RuntimeError('\n'.join(metrics.get('errors', [])) or 'تبدیل کامل نشد.')
-                self.display_result(self.output, metrics)
+                if chat_voice:
+                    self.ai_page.append_voice_transcript(read_text_shared(output), output.name)
+                else:
+                    self.display_result(output, metrics)
                 self.progress.setValue(100)
                 self.status.setText('تبدیل تمام شد؛ متن و گزارش خودکار ذخیره شدند.')
                 if metrics.get('fallback_reasons'):
@@ -1290,9 +1478,13 @@ class Studio(QMainWindow):
                 QTimer.singleShot(1200, self.maybe_prompt_star)
             except Exception as exc:
                 self.progress.setValue(0)
-                log = self.output.with_suffix('.log')
+                log = output.with_suffix('.log')
                 self.status.setText('تبدیل ناموفق بود؛ فایل گزارش برای عیب‌یابی نگه داشته شد.')
-                self.error(str(exc) + f'\n\nگزارش: {log}')
+                if chat_voice:
+                    self.ai_page.voice_failed(str(exc))
+                else:
+                    self.error(str(exc) + f'\n\nگزارش: {log}')
+        self.transcription_target = 'studio'
         self.controls()
         self.refresh_history()
 
@@ -1325,8 +1517,8 @@ class Studio(QMainWindow):
             self.star_prompt_seen = False
             return
         box = QMessageBox(self)
-        box.setWindowTitle(tr('از Voxriva حمایت کنید'))
-        box.setText(tr('اگر Voxriva برایتان مفید بود، می‌توانید به مخزن آن در گیت‌هاب ستاره بدهید. این پیشنهاد فقط یک‌بار نمایش داده می‌شود.'))
+        box.setWindowTitle(tr('از Avunote حمایت کنید'))
+        box.setText(tr('اگر Avunote برایتان مفید بود، می‌توانید به مخزن آن در گیت‌هاب ستاره بدهید. این پیشنهاد فقط یک‌بار نمایش داده می‌شود.'))
         open_button = box.addButton(tr('بازکردن مخزن گیت‌هاب'), QMessageBox.ButtonRole.ActionRole)
         box.addButton(tr('قبلاً ستاره داده‌ام'), QMessageBox.ButtonRole.AcceptRole)
         box.addButton(tr('نه، ممنون'), QMessageBox.ButtonRole.RejectRole)
@@ -1357,6 +1549,9 @@ class Studio(QMainWindow):
             except (OSError, ValueError):
                 pass
         self.table.setRowCount(len(records))
+        self.history_view.setCurrentIndex(1 if records else 0)
+        self.open_history_button.setVisible(bool(records))
+        self.open_history_button.setEnabled(False)
         for row, (path, metrics) in enumerate(records):
             self.history_paths.append(path)
             language = next((language_title(x) for x in LANGUAGES if x['code'] == metrics.get('language')), metrics.get('language', ''))
@@ -1378,7 +1573,11 @@ class Studio(QMainWindow):
 
     def cancel(self):
         if self.busy and self.process:
+            if self.cancelled:
+                return
             self.cancelled = True
+            if self.transcription_target == 'ai':
+                self.ai_page.set_voice_state('cancelling')
             # A long decode may have an FFmpeg child. Stop only this owned worker
             # tree so cancelling does not leave an orphan audio conversion behind.
             try:
@@ -1402,7 +1601,8 @@ class Studio(QMainWindow):
                 event.acceptProposedAction()
 
     def dropEvent(self, event):
-        self.start_transcription(Path(event.mimeData().urls()[0].toLocalFile()))
+        target = 'ai' if self.pages.currentIndex() == 3 else 'studio'
+        self.start_transcription(Path(event.mimeData().urls()[0].toLocalFile()), target=target)
         event.acceptProposedAction()
 
     def error(self, text):
@@ -1410,12 +1610,12 @@ class Studio(QMainWindow):
 
     def about(self):
         box = QMessageBox(self)
-        box.setWindowTitle(tr('درباره Voxriva'))
+        box.setWindowTitle(tr('درباره Avunote'))
         box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText('<b>Voxriva</b><p>' + tr('توسعه‌دهنده برنامه') + ': <b>Fardin Milani</b><br>'
+        box.setText('<b>Avunote</b><p>' + tr('توسعه‌دهنده برنامه') + ': <b>Fardin Milani</b><br>'
                     '<a href="https://github.com/Fardinmilani">GitHub / Fardinmilani</a> · '
                     '<a href="https://fardinmilani.ir">fardinmilani.ir</a><br>'
-                    '<a href="https://github.com/Fardinmilani/Voxriva">Voxriva / GitHub</a></p><p>' +
+                    '<a href="https://github.com/Fardinmilani/Voxriva">Avunote / GitHub</a></p><p>' +
                     tr('برنامه متن‌باز است؛ مجوز کد اختصاصی برنامه MIT است.') + '</p><p>' +
                     tr('مدل‌های آذربایجانی جنوبی: مؤسسه Kartal Ol') + '<br>'
                     '<a href="https://github.com/Kartalol">github.com/Kartalol</a><br>' +
@@ -1440,6 +1640,9 @@ class Studio(QMainWindow):
                 self.closing = False
                 event.ignore()
                 return
+            self.reset_recording()
+            if self.recording_target == 'ai':
+                self.ai_page.set_voice_state('idle', tr('تبدیل متوقف شد؛ می‌توانید فایل یا مدل دیگری انتخاب کنید.'))
         self.cancel()
         if self.process:
             try:
@@ -1460,16 +1663,21 @@ class Studio(QMainWindow):
 
 
 def launch(audio=None, preview=None, page=None):
+    if os.name == 'nt':
+        # Use the same explicit identity on every launch so taskbar icons group
+        # under the new brand rather than the generic Python interpreter.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('FardinMilani.Avunote')
     app = QApplication(sys.argv)
-    app.setApplicationName('Voxriva')
-    app.setOrganizationName('Voxriva')
+    app.setApplicationName('Avunote')
+    app.setOrganizationName('Avunote')
     app.setFont(QFont('Segoe UI', 10))
     window = Studio()
     screen = app.primaryScreen().availableGeometry()
     window.resize(min(1280, screen.width()-40), min(880, screen.height()-60))
     window.show()
     if page is not None:
-        window.show_page({'studio': 0, 'history': 1, 'library': 2, 'ai': 3}.get(str(page), 0))
+        window.show_page({'studio': 0, 'history': 1, 'library': 2, 'ai': 3, 'settings': 4}.get(str(page), 0))
     if audio:
         QTimer.singleShot(300, lambda: window.start_transcription(Path(audio)))
     if preview:
@@ -1479,4 +1687,6 @@ def launch(audio=None, preview=None, page=None):
             window.close()
             app.quit()
         QTimer.singleShot(700, capture)
+    elif getattr(sys, 'frozen', False) and window.allow_star_prompt:
+        QTimer.singleShot(2000, lambda: window.update_controller().check_background())
     sys.exit(app.exec())

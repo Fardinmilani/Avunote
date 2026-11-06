@@ -87,20 +87,44 @@ class CatalogContract(unittest.TestCase):
                 (folder/'config.json').write_text(invalid.ljust(size),encoding='utf-8')
                 self.assertIsNone(catalog.find_local_model(self.model['key']))
 
-    def test_all_general_languages_share_same_models_and_azb_stays_separate(self):
+    def test_whisper_is_shared_and_each_new_model_appears_only_for_supported_languages(self):
         expected={m['key'] for m in catalog.CATALOG if m['backend']=='faster-whisper'}
         for language in catalog.LANGUAGES:
             with self.subTest(language=language['code']):
                 models=catalog.models_for_language(language['code'])
                 if language['code']=='azb':
-                    self.assertTrue(all(x['backend']=='transformers' for x in models))
+                    self.assertEqual({x['backend'] for x in models}, {'transformers', 'sherpa-omnilingual'})
                     self.assertTrue(expected.isdisjoint({x['key'] for x in models}))
-                else:self.assertEqual({x['key'] for x in models},expected)
+                else:self.assertTrue(expected.issubset({x['key'] for x in models}))
+        self.assertTrue({'qwen3-asr-06b', 'sensevoice-small', 'parakeet-tdt-v3'}.issubset(
+            {m['key'] for m in catalog.models_for_language('en')}))
+        for language in ('fa', 'tr'):
+            keys = {m['key'] for m in catalog.models_for_language(language)}
+            self.assertIn('qwen3-asr-06b', keys)
+            self.assertNotIn('parakeet-tdt-v3', keys)
+            self.assertNotIn('sensevoice-small', keys)
+        self.assertNotIn('qwen3-asr-06b', {m['key'] for m in catalog.models_for_language('uk')})
         for code in ['unknown','azj',None]:
             with self.assertRaises(ValueError):catalog.models_for_language(code)
 
+    def test_new_models_expand_choices_without_extrapolating_speech_languages(self):
+        omni = catalog.get_model('omnilingual-ctc-300m')
+        self.assertTrue(omni['cpu_only'] and omni['automatic_language'])
+        self.assertEqual(len(omni['languages']), 97)
+        for code in ('azb', 'fa', 'tr', 'es', 'ja', 'zh'):
+            self.assertIn(omni, catalog.models_for_language(code))
+        for code in ('nn', 'sa'):
+            self.assertNotIn(omni, catalog.models_for_language(code))
+        medium = catalog.get_model('multilingual-medium')
+        self.assertEqual(medium['bytes'], sum(file['size'] for file in medium['artifacts']))
+        self.assertNotIn(medium, catalog.models_for_language('azb'))
+        for row in catalog.LANGUAGES:
+            self.assertGreaterEqual(len(catalog.models_for_language(row['code'])), 4)
+
     def test_storage_alias_precedence_and_no_source_tree_cache(self):
         self.assertEqual(catalog.data_root(),self.root/'cache')
+        with patch.dict(os.environ,{'AVUNOTE_DATA_DIR':str(self.root/'new-cache')}):
+            self.assertEqual(catalog.data_root(),self.root/'new-cache')
         with patch.dict(os.environ,{'VOXRIVA_DATA_DIR':'','AZB_DATA_DIR':str(self.root/'legacy-cache')}):
             self.assertEqual(catalog.data_root(),self.root/'legacy-cache')
         with patch.dict(os.environ,{'VOXRIVA_DATA_DIR':'','AZB_DATA_DIR':'','LOCALAPPDATA':str(self.root/'appdata')}):

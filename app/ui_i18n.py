@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import re
 
+from ui_locale_expanded import ADDITIONAL_LANGUAGES, SPEECH_NAMES
+
 UI_LANGUAGES = [('en', 'English'), ('fa', 'فارسی'), ('tr', 'Türkçe'),
-                ('ar', 'العربية'), ('az', 'Azərbaycanca')]
+                ('ar', 'العربية'), ('az', 'Azərbaycanca'), *ADDITIONAL_LANGUAGES]
 RTL_LANGUAGES = {'fa', 'ar'}
 _language = 'en'
 
@@ -84,12 +86,12 @@ EN = {
     'تبدیل ناموفق بود؛ فایل گزارش برای عیب‌یابی نگه داشته شد.': 'Transcription failed. A diagnostic log has been kept.',
     'ذخیره متن خام': 'Save original transcript',
     'نتیجه ذخیره‌شده از تاریخچه نمایش داده شد.': 'Showing a saved result from your history.',
-    'نیاز به بررسی': 'Something needs attention', 'درباره Voxriva': 'About Voxriva',
+    'نیاز به بررسی': 'Something needs attention', 'درباره Avunote': 'About Avunote',
     'بازکردن مجوزها': 'Open licenses', 'بستن': 'Close',
     'در حال توقف ایمن دانلود؛ چند لحظه دیگر دوباره برنامه را ببندید.': 'Stopping the download safely. Please close the app again in a moment.',
-    'Voxriva — استودیوی گفتار آفلاین': 'Voxriva — Offline speech studio',
+    'Avunote — استودیوی گفتار آفلاین': 'Avunote — Offline speech studio',
     'نمودار سطح صدای میکروفون': 'Microphone level',
-    'برنامه متن‌باز است؛ مجوز کد اختصاصی برنامه MIT است.': 'Voxriva is open source. Its application code is licensed under MIT.',
+    'برنامه متن‌باز است؛ مجوز کد اختصاصی برنامه MIT است.': 'Avunote is open source. Its application code is licensed under MIT.',
     'توسعه‌دهنده برنامه': 'Application developer',
     'مدل‌های آذربایجانی جنوبی: مؤسسه Kartal Ol': 'South Azerbaijani models: Kartal Ol Foundation',
     'طبق اعلام توسعه‌دهنده، مجوز مدل‌های آذربایجانی MIT است.': 'The developer reports that the Azerbaijani models are licensed under MIT.',
@@ -150,7 +152,7 @@ def language_title(item):
     if _language == 'fa':
         return item['title']
     english = item.get('english_title') or item.get('english') or item.get('name_en') or _speech_titles.get(item['title'], item['title'])
-    return _localized(english)
+    return SPEECH_NAMES.get(_language, {}).get(item['code']) or _localized(english)
 
 
 def _english(text):
@@ -189,7 +191,8 @@ def _english(text):
 def tr(text):
     text = str(text)
     if _language == 'fa':
-        return text
+        # Legacy keys already use Persian; newer controls use stable English keys.
+        return _localized(text)
     if text in EN:
         return _localized(EN[text])
     match = re.match(r'^(\d+) زبان در دسترس$', text)

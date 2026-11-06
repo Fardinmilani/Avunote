@@ -12,7 +12,7 @@ import time
 import traceback
 import wave
 
-from model_catalog import CATALOG, LANGUAGES, get_model, models_for_language, find_local_model
+from model_catalog import CATALOG, LANGUAGES, SHERPA_BACKENDS, get_model, models_for_language, find_local_model
 from compute_devices import resolve_device, gpu_memory_sample, find_openvino_model
 from atomic_files import atomic_write_text
 
@@ -142,8 +142,56 @@ class _CT2Runner:
         gc.collect()
 
 
+class _SherpaRunner:
+    runtime_backend = 'sherpa-onnx'
+    compute_type = 'int8'
+
+    def __init__(self, backend, path, device, language):
+        from sherpa_onnx import OfflineRecognizer
+
+        self.device = device
+        options = {'provider': 'cpu', 'num_threads': min(8, os.cpu_count() or 1)}
+        if backend == 'sherpa-parakeet':
+            self.model = OfflineRecognizer.from_transducer(
+                encoder=str(path/'encoder.int8.onnx'), decoder=str(path/'decoder.int8.onnx'),
+                joiner=str(path/'joiner.int8.onnx'), tokens=str(path/'tokens.txt'),
+                model_type='nemo_transducer', **options)
+        elif backend == 'sherpa-qwen3':
+            # Leave context for both a full 30-second input and its transcript.
+            self.model = OfflineRecognizer.from_qwen3_asr(
+                conv_frontend=str(path/'conv_frontend.onnx'), encoder=str(path/'encoder.int8.onnx'),
+                decoder=str(path/'decoder.int8.onnx'), tokenizer=str(path),
+                max_total_len=1024, max_new_tokens=512, **options)
+        elif backend == 'sherpa-sensevoice':
+            self.model = OfflineRecognizer.from_sense_voice(
+                model=str(path/'model.int8.onnx'), tokens=str(path/'tokens.txt'),
+                language=language, use_itn=True, **options)
+        elif backend == 'sherpa-omnilingual':
+            self.model = OfflineRecognizer.from_omnilingual_asr_ctc(
+                model=str(path/'model.int8.onnx'), tokens=str(path/'tokens.txt'), **options)
+        else:
+            raise ValueError(f'Unsupported ONNX speech backend: {backend}')
+
+    def generate(self, samples, beams):
+        # These exports use a fixed decoder. The studio's processing mode can
+        # still choose quiet boundaries between chunks, as with Whisper.
+        stream = self.model.create_stream()
+        stream.accept_waveform(16000, samples)
+        self.model.decode_stream(stream)
+        return stream.result.text
+
+    def close(self):
+        self.model = None
+
+
 def load_runner(backend, path, device, language):
-    return (_TransformersRunner if backend == 'transformers' else _CT2Runner)(path, device, language)
+    if backend in SHERPA_BACKENDS:
+        return _SherpaRunner(backend, path, device, language)
+    if backend == 'transformers':
+        return _TransformersRunner(path, device, language)
+    if backend == 'faster-whisper':
+        return _CT2Runner(path, device, language)
+    raise ValueError(f'Unsupported speech backend: {backend}')
 
 
 class _OpenVINORunner:
@@ -233,9 +281,10 @@ def transcribe(audio_path, output_path, model_key='whisper-base-full', beams=5, 
             report['compute_type'] = runner.compute_type
             report['runtime_backend'] = getattr(runner, 'runtime_backend', item['backend'])
             report['actual_device'] = actual
-            module = sys.modules.get('torch' if item['backend'] == 'transformers' else 'ctranslate2')
+            runtime = {'transformers': 'torch', 'faster-whisper': 'ctranslate2'}.get(item['backend'], 'sherpa_onnx')
+            module = sys.modules.get(runtime)
             if module is not None:
-                report['torch_version' if item['backend'] == 'transformers' else 'ctranslate2_version'] = getattr(module, '__version__', 'unknown')
+                report[f'{runtime}_version'] = getattr(module, '__version__', 'unknown')
         finally:
             report['load_seconds'] += time.perf_counter()-began
 

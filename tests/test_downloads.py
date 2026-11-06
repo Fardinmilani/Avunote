@@ -258,6 +258,21 @@ class Security(unittest.TestCase):
         model['artifacts']=[{'name':'../model.bin','size':1,'sha256':'0'*64}]
         with self.assertRaises(ValueError):downloads._resolve_artifacts(model,None)
 
+    def test_pinned_onnx_artifact_manifests_and_nested_tokenizer(self):
+        for model in catalog.CATALOG:
+            if model['backend'] not in catalog.SHERPA_BACKENDS:
+                continue
+            with self.subTest(model=model['key']):
+                artifacts = downloads._resolve_artifacts(model, None)
+                self.assertEqual(sum(file['size'] for file in artifacts), model['bytes'])
+                self.assertEqual({file['name'] for file in artifacts}, set(model['files']))
+                self.assertTrue(all(model['revision'] in file['url'] for file in artifacts))
+        qwen = catalog.get_model('qwen3-asr-06b')
+        tokenizer = next(file for file in downloads._resolve_artifacts(qwen, None) if file['name'] == 'vocab.json')
+        self.assertTrue(tokenizer['url'].endswith('/tokenizer/vocab.json?download=true'))
+        invalid = {**qwen, 'artifacts': [dict(file, remote_prefix='../escape') for file in qwen['artifacts']]}
+        with self.assertRaises(ValueError):downloads._resolve_artifacts(invalid, None)
+
 
 if __name__=='__main__':
     unittest.main()

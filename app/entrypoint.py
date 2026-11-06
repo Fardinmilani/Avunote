@@ -12,7 +12,7 @@ if getattr(sys, 'frozen', False):
     try:
         startup_log = (Path(sys.executable).parent / 'startup.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stderr = startup_log
-        print('Starting Voxriva')
+        print('Starting Avunote')
     except OSError:
         pass
 
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'npu'], default='auto')
     parser.add_argument('--chunk-seconds', type=int, choices=[10, 15, 20, 25, 30], default=20)
     parser.add_argument('--preview', type=Path)
-    parser.add_argument('--page', choices=['studio', 'library', 'history', 'ai'], default='studio')
+    parser.add_argument('--page', choices=['studio', 'library', 'history', 'ai', 'settings'], default='studio')
     parser.add_argument('audio', nargs='?')
     args = parser.parse_args()
     if args.worker:

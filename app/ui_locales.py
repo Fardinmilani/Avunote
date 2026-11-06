@@ -114,15 +114,15 @@ _ROWS = [
 ('Save original transcript', 'Özgün dökümü kaydet', 'حفظ النص الأصلي', 'Orijinal mətni saxla'),
 ('Showing a saved result from your history.', 'Geçmişinizden kaydedilmiş bir sonuç gösteriliyor.', 'عرض نتيجة محفوظة من السجل.', 'Tarixçənizdən saxlanmış nəticə göstərilir.'),
 ('Something needs attention', 'Kontrol edilmesi gereken bir durum var', 'هناك ما يستدعي المراجعة', 'Yoxlanmalı bir hal var'),
-('About Voxriva', 'Voxriva hakkında', 'حول Voxriva', 'Voxriva haqqında'),
+('About Avunote', 'Avunote hakkında', 'حول Avunote', 'Avunote haqqında'),
 ('Open licenses', 'Lisansları aç', 'فتح التراخيص', 'Lisenziyaları aç'),
 ('Close', 'Kapat', 'إغلاق', 'Bağla'),
 ('Stopping the download safely. Please close the app again in a moment.', 'İndirme güvenle durduruluyor. Lütfen biraz sonra uygulamayı yeniden kapatın.', 'جارٍ إيقاف التنزيل بأمان. حاول إغلاق التطبيق مجددًا بعد لحظات.', 'Yükləmə təhlükəsiz dayandırılır. Bir qədər sonra tətbiqi yenidən bağlayın.'),
-('Voxriva — Offline speech studio', 'Voxriva — Çevrimdışı konuşma stüdyosu', 'Voxriva — استوديو الكلام بدون إنترنت', 'Voxriva — Oflayn nitq studiyası'),
+('Avunote — Offline speech studio', 'Avunote — Çevrimdışı konuşma stüdyosu', 'Avunote — استوديو الكلام بدون إنترنت', 'Avunote — Oflayn nitq studiyası'),
 ('Microphone level', 'Mikrofon seviyesi', 'مستوى الميكروفون', 'Mikrofon səviyyəsi'),
 ('The recording is too short. Please speak for at least one second.', 'Kayıt çok kısa. Lütfen en az bir saniye konuşun.', 'التسجيل قصير جدًا. يرجى التحدث لثانية واحدة على الأقل.', 'Qeyd çox qısadır. Ən azı bir saniyə danışın.'),
 ('The microphone dropped some audio. Reduce system load and record again.', 'Mikrofon sesin bir bölümünü kaybetti. Sistem yükünü azaltıp yeniden kaydedin.', 'فقد الميكروفون جزءًا من الصوت. خفّف حمل النظام وسجّل مجددًا.', 'Mikrofon səsin bir hissəsini itirdi. Sistem yükünü azaldıb yenidən qeyd edin.'),
-('Voxriva is open source. Its application code is licensed under MIT.', 'Voxriva açık kaynaklıdır. Uygulama kodu MIT lisanslıdır.', 'Voxriva مفتوح المصدر. شيفرة التطبيق مرخصة بموجب MIT.', 'Voxriva açıq mənbəlidir. Tətbiqin kodu MIT lisenziyası altındadır.'),
+('Avunote is open source. Its application code is licensed under MIT.', 'Avunote açık kaynaklıdır. Uygulama kodu MIT lisanslıdır.', 'Avunote مفتوح المصدر. شيفرة التطبيق مرخصة بموجب MIT.', 'Avunote açıq mənbəlidir. Tətbiqin kodu MIT lisenziyası altındadır.'),
 ('Application developer', 'Uygulama geliştiricisi', 'مطوّر التطبيق', 'Tətbiqin tərtibatçısı'),
 ('South Azerbaijani models: Kartal Ol Foundation', 'Güney Azerbaycancası modelleri: Kartal Ol Vakfı', 'نماذج الأذربيجانية الجنوبية: مؤسسة Kartal Ol', 'Cənubi Azərbaycan dili modelləri: Kartal Ol Fondu'),
 ('The developer reports that the Azerbaijani models are licensed under MIT.', 'Geliştirici, Azerbaycanca modellerin MIT lisanslı olduğunu bildiriyor.', 'يفيد المطوّر بأن نماذج الأذربيجانية مرخصة بموجب MIT.', 'Tərtibatçı Azərbaycan dili modellərinin MIT lisenziyası altında olduğunu bildirir.'),
@@ -178,3 +178,7 @@ TRANSLATIONS = {language: {row[0]: row[index] for row in _ROWS}
 from ui_v3_strings import V3_ROWS
 for _language, _index in [('tr', 2), ('ar', 3), ('az', 4)]:
     TRANSLATIONS[_language].update({row[1]: row[_index] for row in V3_ROWS})
+
+from ui_locale_expanded import EXPANDED_TRANSLATIONS
+for _language, _translations in EXPANDED_TRANSLATIONS.items():
+    TRANSLATIONS.setdefault(_language, {}).update(_translations)

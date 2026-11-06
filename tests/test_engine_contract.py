@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import wave
 
 import numpy as np
@@ -98,6 +98,31 @@ class EngineContract(unittest.TestCase):
                 self.assertEqual(metrics['status'],'success')
                 self.assertEqual(os.environ['HF_HUB_OFFLINE'],'1')
                 self.assertEqual(os.environ['TRANSFORMERS_OFFLINE'],'1')
+
+    def test_qwen_persian_uses_offline_onnx_and_recovers_from_saved_cuda_preference(self):
+        stream = Mock()
+        stream.result = types.SimpleNamespace(text='این یک آزمون محلی است.')
+        recognizer = Mock()
+        recognizer.create_stream.return_value = stream
+        sherpa = types.SimpleNamespace(
+            __version__='fixture', OfflineRecognizer=types.SimpleNamespace(
+                from_qwen3_asr=Mock(return_value=recognizer)))
+        output = self.root/'persian-onnx.txt'
+        with patch.dict(sys.modules, {'sherpa_onnx': sherpa}), \
+             patch.object(engine, 'find_local_model', return_value=self.root), \
+             patch.object(engine, 'ffmpeg_executable', return_value='local-ffmpeg'), \
+             patch.object(engine.subprocess, 'run', side_effect=self.convert), \
+             patch('requests.sessions.Session.request', side_effect=AssertionError('Network forbidden during inference')):
+            status = engine.transcribe(self.audio, output, 'qwen3-asr-06b', language='fa', device='cuda')
+        self.assertEqual(status, 0)
+        self.assertEqual(output.read_text(encoding='utf-8'), stream.result.text)
+        recognizer.decode_stream.assert_called_once_with(stream)
+        self.assertEqual(stream.accept_waveform.call_args.args[0], 16000)
+        self.assertEqual(len(stream.accept_waveform.call_args.args[1]), 16000)
+        report = json.loads(output.with_suffix('.metrics.json').read_text(encoding='utf-8'))
+        self.assertEqual(report['actual_device'], 'cpu')
+        self.assertEqual(report['runtime_backend'], 'sherpa-onnx')
+        self.assertEqual(report['fallback_events'][0]['phase'], 'capability')
 
     def test_south_azerbaijani_cannot_use_generic_multilingual_model(self):
         result,output,metrics=self.run_engine('azb')

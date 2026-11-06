@@ -2,6 +2,11 @@ name: Build Windows model-free app
 
 on:
   workflow_dispatch:
+    inputs:
+      previous_release_tag:
+        description: 'Optional previous published tag with an Avunote manifest, for a smaller update'
+        type: string
+        required: false
   pull_request:
     paths:
       - 'app/**'
@@ -9,6 +14,7 @@ on:
       - 'tests/**'
       - 'installer/**'
       - 'assets/**'
+      - 'docs/**'
       - 'licenses/**'
       - 'vendor/**'
       - 'requirements*.txt'
@@ -16,7 +22,7 @@ on:
       - 'build_windows.ps1'
       - 'BUILD_SETUP.cmd'
       - 'VERSION'
-      - 'FEATURES_2_1.md'
+      - 'FEATURES_2_2.md'
       - 'README*'
       - 'LICENSE'
       - 'THIRD_PARTY_NOTICES.md'
@@ -99,31 +105,46 @@ jobs:
       - name: Check release excludes personal data and weights
         shell: pwsh
         run: |
-          $taskReleaseRoot = (Resolve-Path -LiteralPath dist/Voxriva).Path
-          $taskUnexpected = Get-ChildItem -LiteralPath dist/Voxriva -Recurse -File | Where-Object {
+          $taskReleaseRoot = (Resolve-Path -LiteralPath dist/Avunote).Path
+          $taskUnexpected = Get-ChildItem -LiteralPath dist/Avunote -Recurse -File | Where-Object {
             $taskRelative = $_.FullName.Substring($taskReleaseRoot.Length+1)
             $_.Name -eq 'model.safetensors' -or $_.Name -eq 'model.bin' -or
             $_.Name -eq 'ai-profiles.json' -or
             $taskRelative -match '^(Data|recordings|results|ai-chats)[\\/]'
           }
           if ($taskUnexpected) { throw 'Private data or model weights found in model-free release.' }
-          if (-not (Test-Path -LiteralPath dist/Voxriva/Licenses/Sources/source-manifest.json)) {
+          if (-not (Test-Path -LiteralPath dist/Avunote/Licenses/Sources/source-manifest.json)) {
             throw 'Matching source archive manifest missing.'
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: Voxriva-Windows-x64-model-free
-          path: dist/Voxriva/
+          name: Avunote-Windows-x64-model-free
+          path: dist/Avunote/
           retention-days: 7
           if-no-files-found: error
       - name: Build optional-shortcut Setup installer
         shell: pwsh
+        env:
+          AVUNOTE_PREVIOUS_TAG: ${{ inputs.previous_release_tag }}
         run: |
           $taskVersion = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          ./scripts/build_installer.ps1 -ReleaseDir dist/Voxriva -DownloadNsis -Version $taskVersion -OutputPath "release/Voxriva-$taskVersion-Windows-x64-Setup.exe"
+          $taskArguments = @{ ReleaseDir='dist/Avunote'; DownloadNsis=$true; Version=$taskVersion; OutputPath="release/Avunote-$taskVersion-Windows-x64-Setup.exe" }
+          if ($env:AVUNOTE_PREVIOUS_TAG) {
+            if ($env:AVUNOTE_PREVIOUS_TAG -cnotmatch '^v?(\d+\.\d+\.\d+)$') { throw 'Use a numeric Avunote release tag.' }
+            $taskPreviousVersion = $Matches[1]
+            if ([version]$taskPreviousVersion -ge [version]$taskVersion) { throw 'The baseline release must precede VERSION.' }
+            $taskManifestName = "Avunote-$taskPreviousVersion-Windows-x64-Manifest.json"
+            $taskManifest = Join-Path $env:RUNNER_TEMP $taskManifestName
+            Invoke-WebRequest -Uri "https://github.com/Fardinmilani/Voxriva/releases/download/$env:AVUNOTE_PREVIOUS_TAG/$taskManifestName" -OutFile $taskManifest -TimeoutSec 45
+            $taskArguments.PreviousManifest = $taskManifest
+          }
+          ./scripts/build_installer.ps1 @taskArguments
       - uses: actions/upload-artifact@v4
         with:
-          name: Voxriva-Windows-x64-Setup
-          path: release/Voxriva-*-Windows-x64-Setup.exe*
+          name: Avunote-Windows-x64-Setup
+          path: |
+            release/Avunote-*-Windows-x64-Setup.exe*
+            release/Avunote-*-Windows-x64-Manifest.json
+            release/Avunote-*-Windows-x64-Update-from-*.exe*
           retention-days: 7
           if-no-files-found: error

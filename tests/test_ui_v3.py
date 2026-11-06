@@ -41,7 +41,8 @@ class NewUiTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.patches = [
-            patch.dict(os.environ, VOXRIVA_DATA_DIR=self.folder.name, VOXRIVA_SUPPRESS_PROMPTS='1'),
+            patch.dict(os.environ, AVUNOTE_DATA_DIR=self.folder.name, VOXRIVA_DATA_DIR=self.folder.name,
+                       AVUNOTE_SUPPRESS_PROMPTS='1', VOXRIVA_SUPPRESS_PROMPTS='1'),
             patch.dict(sys.modules, ai_panel=types.SimpleNamespace(AIPage=FakeAIPage)),
             patch.object(studio_ui.Studio, 'refresh_devices', lambda window: window.devices.addItem('Test device', None)),
             patch.object(studio_ui, 'find_local_model', return_value=None),
@@ -82,6 +83,7 @@ class NewUiTests(unittest.TestCase):
         self.window.chunk_seconds.setCurrentIndex(self.window.chunk_seconds.findData(15))
         with patch.object(studio_ui, 'find_local_model', return_value=Path(self.folder.name)), \
              patch.object(studio_ui.subprocess, 'Popen') as popen:
+            self.window.refresh_library()
             self.window.start_transcription(audio)
             command = popen.call_args.args[0]
             self.assertEqual(command[command.index('--device')+1], 'cuda')

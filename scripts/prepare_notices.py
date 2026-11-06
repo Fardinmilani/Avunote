@@ -32,6 +32,8 @@ INTEL_PACKAGE = 'intelopenmp.redist.win.2025.3.0.640.nupkg'
 INTEL_BASE = 'https://api.nuget.org/v3-flatcontainer/intelopenmp.redist.win/2025.3.0.640/'
 INTEL_PACKAGE_SHA256 = 'a4212c4aec3e528864d56d8b0c87103cd5c21a888d1985124909a1f85624a449'
 INTEL_DLL_SHA256 = '982233366b0afcda1e0f55a0b134097e35b779613f54ddb69e685e6cd06b755f'
+SHERPA_VERSION = '2.0.1'
+SHERPA_ONNX_RUNTIME_SHA256 = '7f66f939a881baf4f46a2216496798edf4a1429878b646d12674aa62f27d8a25'
 
 
 def provide_intel_runtime(release, licenses, cache, offline):
@@ -80,6 +82,19 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def verify_sherpa_runtime(release):
+    """Ensure the included Microsoft notices match the packaged CPU runtime."""
+    for package in ('sherpa-onnx', 'sherpa-onnx-core'):
+        if metadata.version(package) != SHERPA_VERSION:
+            raise RuntimeError(f'{package} must match the pinned release version {SHERPA_VERSION}')
+    runtime = release/'_internal/sherpa_onnx/lib'
+    if not any(runtime.glob('_sherpa_onnx*.pyd')) or not (runtime/'onnxruntime.dll').is_file():
+        raise RuntimeError('Packaged sherpa-onnx bindings or its colocated ONNX Runtime DLL are missing')
+    for path in release.rglob('onnxruntime.dll'):
+        if digest(path) != SHERPA_ONNX_RUNTIME_SHA256:
+            raise RuntimeError(f'ONNX Runtime DLL does not match the verified Windows x64 CPU package: {path}')
+
+
 def provide_source(name, base_url, expected, destination, cache, offline):
     target = destination/name
     if target.is_file() and digest(target) == expected:
@@ -94,7 +109,7 @@ def provide_source(name, base_url, expected, destination, cache, offline):
         raise RuntimeError(f'Matching source archive missing in offline mode: {name}')
     print(f'Downloading library source: {name}', flush=True)
     temporary = target.with_suffix(target.suffix+'.part')
-    request = urllib.request.Request(base_url+name, headers={'User-Agent': 'Voxriva-source-builder/2'})
+    request = urllib.request.Request(base_url+name, headers={'User-Agent': 'Avunote-source-builder/2'})
     try:
         with urllib.request.urlopen(request, timeout=60) as response, temporary.open('wb') as output:
             shutil.copyfileobj(response, output, length=1024*1024)
@@ -142,7 +157,7 @@ def copy_package_notices(destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--release', type=Path, default=PROJECT/'dist/Voxriva')
+    parser.add_argument('--release', type=Path, default=PROJECT/'dist/Avunote')
     parser.add_argument('--source-cache', type=Path, default=os.environ.get('AZB_SOURCE_CACHE'))
     parser.add_argument('--package-path', type=Path, action='append', default=[])
     parser.add_argument('--offline', action='store_true', help='Require verified source archives in cache; never use network')
@@ -151,6 +166,7 @@ def main():
         sys.path.insert(0, str(path))
     if metadata.version('PySide6-Essentials') != '6.12.0' or metadata.version('shiboken6') != '6.12.0':
         raise RuntimeError('Source archive pins require PySide6-Essentials and shiboken6 exactly 6.12.0')
+    verify_sherpa_runtime(args.release)
     ffmpeg = PROJECT/'vendor/ffmpeg.exe'
     notice = subprocess.check_output([str(ffmpeg), '-L'], stderr=subprocess.STDOUT, text=True, timeout=30)
     normalized = ' '.join(notice.split())

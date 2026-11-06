@@ -15,7 +15,9 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-PROVIDERS = ('gemini', 'openai-compatible', 'ollama')
+OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+OPENROUTER_FREE_MODEL = 'openrouter/free'
+PROVIDERS = ('gemini', 'openai-compatible', 'ollama', 'openrouter')
 MAX_CONTEXT_CHARS = 120_000
 MAX_MESSAGES = 80
 MAX_OUTPUT_TOKENS = 4096
@@ -26,6 +28,7 @@ DEFAULT_BASE_URLS = {
     'gemini': 'https://generativelanguage.googleapis.com/v1beta',
     'openai-compatible': 'https://api.openai.com/v1',
     'ollama': 'http://127.0.0.1:11434',
+    'openrouter': OPENROUTER_BASE_URL,
 }
 
 
@@ -95,6 +98,8 @@ def validate_profile(profile):
             raise AIError('The local Ollama profile requires a loopback server.')
         if model.lower().endswith((':cloud', '-cloud')):
             raise AIError('Choose an installed local Ollama model, not a cloud-routed model.')
+    if provider == 'openrouter' and (base_url != OPENROUTER_BASE_URL or model != OPENROUTER_FREE_MODEL):
+        raise AIError('The browser sign-in connection is limited to OpenRouter free models.')
     try:
         output_tokens = int(profile.get('max_output_tokens', DEFAULT_OUTPUT_TOKENS))
     except (ValueError, TypeError):
@@ -156,7 +161,10 @@ def _payload(config, messages):
     if config['provider'] == 'ollama':
         return {'model': model, 'messages': messages, 'stream': False,
                 'options': {'num_predict': tokens}}
-    return {'model': model, 'messages': messages, 'stream': False, 'max_tokens': tokens}
+    body = {'model': model, 'messages': messages, 'stream': False, 'max_tokens': tokens}
+    if config['provider'] == 'openrouter':
+        body['provider'] = {'max_price': {'prompt': 0, 'completion': 0, 'request': 0}}
+    return body
 
 
 def _reply(config, data):
@@ -213,6 +221,8 @@ def chat(profile, messages, cancel_event=None, on_delta=None):
         raise AIError('The API key contains invalid characters.')
     if config['provider'] == 'gemini' and not key:
         raise AIError('Add your Google AI Studio API key to this profile.')
+    if config['provider'] == 'openrouter' and not key:
+        raise AIError('Reconnect your OpenRouter account.')
     headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
     if key:
         headers['x-goog-api-key' if config['provider'] == 'gemini' else 'Authorization'] = key if config['provider'] == 'gemini' else 'Bearer '+key

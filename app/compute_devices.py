@@ -7,9 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+from model_catalog import SHERPA_BACKENDS
+
 NPU_REASON = ('NPU requires an optional OpenVINO GenAI runtime, supported NPU driver, and a '
               'local OpenVINO IR export of this exact selected model with provenance. '
               'Current PyTorch/CTranslate2 files cannot run directly on NPU. No runtime or model is downloaded automatically.')
+ONNX_CPU_REASON = 'This ONNX model uses the bundled CPU runtime.'
 OPENVINO_FILES = ['config.json', 'generation_config.json', 'preprocessor_config.json',
                   'tokenizer_config.json', 'openvino_encoder_model.xml', 'openvino_encoder_model.bin',
                   'openvino_decoder_model.xml', 'openvino_decoder_model.bin',
@@ -25,7 +28,7 @@ def prepare_optional_backends():
     This also works with the portable Python runtime. Packages must match its
     Python version and architecture; nothing is installed, fetched or copied.
     """
-    value = os.environ.get('VOXRIVA_OPTIONAL_BACKENDS_DIR')
+    value = os.environ.get('AVUNOTE_OPTIONAL_BACKENDS_DIR') or os.environ.get('VOXRIVA_OPTIONAL_BACKENDS_DIR')
     if not value:
         return
     root = Path(value).expanduser().resolve()
@@ -52,17 +55,23 @@ def find_openvino_model(model_key, model_path=None):
     """
     from model_catalog import get_model, _registered_roots
     model = get_model(model_key)
+    if model['backend'] in SHERPA_BACKENDS:
+        return None
     roots = []
     if model_path is not None:
         roots.append(Path(model_path)/'openvino')
-    if os.environ.get('VOXRIVA_OPENVINO_MODELS_DIR'):
-        root = Path(os.environ['VOXRIVA_OPENVINO_MODELS_DIR'])
+    configured_root = os.environ.get('AVUNOTE_OPENVINO_MODELS_DIR') or os.environ.get('VOXRIVA_OPENVINO_MODELS_DIR')
+    if configured_root:
+        root = Path(configured_root)
         roots.extend([root/model_key, root/model_key/'openvino', root])
     for root in _registered_roots():
         roots.extend([root/'openvino', root/model_key/'openvino', root])
     for root in roots:
         try:
-            info = json.loads((root/'voxriva-openvino.json').read_text(encoding='utf-8'))
+            manifest = root/'avunote-openvino.json'
+            if not manifest.is_file():
+                manifest = root/'voxriva-openvino.json'
+            info = json.loads(manifest.read_text(encoding='utf-8'))
             if not isinstance(info, dict) or info.get('format') != 'openvino-genai-whisper':
                 continue
             if any(info.get(k) != v for k, v in {
@@ -136,6 +145,8 @@ def resolve_device(requested, backend, torch_module=None, ct2_module=None, model
         raise ValueError('Device must be auto, cpu, cuda, or npu')
     if requested == 'cpu':
         return 'cpu', 'CPU was explicitly selected.'
+    if backend in SHERPA_BACKENDS:
+        return 'cpu', ONNX_CPU_REASON
     if requested == 'npu':
         available, reason = probe_npu(model_key, model_path) if model_key else (False, NPU_REASON)
         return ('npu' if available else 'cpu'), reason
@@ -155,6 +166,12 @@ def device_options(model_key=None, probe=False):
     if model_key:
         from model_catalog import get_model
         backend = get_model(model_key)['backend']
+    if backend in SHERPA_BACKENDS:
+        return [
+            {'key': key, 'title': title, 'available': key in {'auto', 'cpu'}, 'reason': ONNX_CPU_REASON}
+            for key, title in [('auto', 'Automatic'), ('cpu', 'CPU'), ('cuda', 'NVIDIA GPU (CUDA)'),
+                               ('npu', 'NPU (OpenVINO GenAI)')]
+        ]
     available, reason = None, 'Checked at processing time. CUDA runtime and NVIDIA drivers are required.'
     if backend == 'transformers':
         try:

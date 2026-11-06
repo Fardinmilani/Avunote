@@ -8,6 +8,7 @@ in this file. Keep .local/ ignored in Git. Dependencies are not installed here.
 #>
 param(
     [string]$Version,
+    [string]$PreviousManifest,
     [switch]$CheckOnly,
     [switch]$SkipTests,
     [switch]$AllowSourceDownloads,
@@ -23,6 +24,7 @@ $taskTranscript = $false
 $taskLock = $null
 $taskLocationPushed = $false
 $taskEnvironmentNames = @('PYTHONPATH','AZB_QT_PATH','AZB_SOURCE_CACHE',
+    'AVUNOTE_SUPPRESS_PROMPTS','AVUNOTE_DATA_DIR',
     'VOXRIVA_SUPPRESS_PROMPTS','VOXRIVA_DATA_DIR','QT_QPA_PLATFORM',
     'HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_HUB_DISABLE_TELEMETRY')
 $taskOriginalEnvironment = @{}
@@ -65,16 +67,18 @@ try {
         $taskLock = [IO.File]::Open((Join-Path $taskLocal 'setup-build.lock'),
             [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch {
-        throw 'Another Voxriva Setup build is running. Wait for it to finish before starting another.'
+        throw 'Another Avunote Setup build is running. Wait for it to finish before starting another.'
     }
     Push-Location -LiteralPath $taskRoot
     $taskLocationPushed = $true
 
-    if (-not $Version) { $Version = (Get-Content -LiteralPath (Join-Path $taskRoot 'VERSION') -Raw).Trim() }
+    $taskSourceVersion = (Get-Content -LiteralPath (Join-Path $taskRoot 'VERSION') -Raw).Trim()
+    if (-not $Version) { $Version = $taskSourceVersion }
+    if ($Version -ne $taskSourceVersion) { throw 'Update the VERSION file before building this release.' }
     if ($Version -notmatch '^\d+\.\d+\.\d+$' -or @($Version.Split('.') | Where-Object { [int64]$_ -gt 65535 }).Count) {
-        throw 'VERSION must contain a Windows-compatible version such as 2.1.1 (three numbers, each <= 65535).'
+        throw 'VERSION must contain a Windows-compatible version such as 2.3.0 (three numbers, each <= 65535).'
     }
-    Write-Host "Voxriva $Version - build from current source"
+    Write-Host "Avunote $Version - build from current source"
     Write-Host "Project: $taskRoot"
     Write-Host "Log: $taskLog"
     $taskSettingsPath = Join-Path $taskLocal 'build-settings.json'
@@ -104,6 +108,10 @@ try {
         Remove-Item Env:AZB_QT_PATH -ErrorAction SilentlyContinue
     }
     $env:VOXRIVA_SUPPRESS_PROMPTS = '1'
+    $env:AVUNOTE_SUPPRESS_PROMPTS = '1'
+    # Tests may override the legacy alias per case. An inherited higher-priority
+    # new alias must not redirect them to a real user's application profile.
+    Remove-Item Env:AVUNOTE_DATA_DIR -ErrorAction SilentlyContinue
     $env:VOXRIVA_DATA_DIR = Join-Path $taskLocal 'build-test-profile'
     $env:QT_QPA_PLATFORM = 'offscreen'
     $env:HF_HUB_OFFLINE = '1'
@@ -145,13 +153,15 @@ try {
 import hashlib, importlib.metadata as m, os, pathlib, sys
 if not (sys.platform == 'win32' and sys.maxsize > 2**32 and (3,11) <= sys.version_info[:2] <= (3,13)):
     raise RuntimeError('Use Windows x64 CPython 3.11-3.13 in the local build environment.')
-import PyInstaller, PySide6.QtWidgets, torch, transformers, tokenizers, ctranslate2, numpy, psutil, requests, sounddevice, safetensors
+import PyInstaller, PySide6.QtWidgets, torch, transformers, tokenizers, ctranslate2, numpy, psutil, requests, sounddevice, safetensors, sherpa_onnx
 if torch.version.cuda is not None:
     raise RuntimeError('Use the CPU-only PyTorch build documented in README to avoid bundling multi-gigabyte CUDA libraries.')
 if m.version('PySide6-Essentials') != '6.12.0' or m.version('shiboken6') != '6.12.0':
     raise RuntimeError('Matching source notices require PySide6-Essentials/shiboken6 6.12.0.')
 sys.path.insert(0, str(pathlib.Path(sys.argv[1])/'scripts'))
-from prepare_notices import SOURCES, INTEL_PACKAGE, INTEL_PACKAGE_SHA256
+from prepare_notices import SOURCES, INTEL_PACKAGE, INTEL_PACKAGE_SHA256, SHERPA_VERSION
+if any(m.version(name) != SHERPA_VERSION for name in ('sherpa-onnx', 'sherpa-onnx-core')):
+    raise RuntimeError(f'Use the sherpa-onnx {SHERPA_VERSION} Windows CPU runtime from requirements.txt.')
 cache=pathlib.Path(sys.argv[2]); allow=sys.argv[3] == 'True'; missing=[]
 for name, expected in [(x[0],x[2]) for x in SOURCES]+[(INTEL_PACKAGE,INTEL_PACKAGE_SHA256)]:
     path=cache/name
@@ -184,7 +194,7 @@ print('Matching-source cache verified.' if not missing else 'Explicit source dow
         }
         Write-Host 'Rebuilding the application from the current source...'
         & (Join-Path $taskRoot 'build_windows.ps1') -Python $taskPython -SourceCache $taskSourceCache -OfflineSources:(-not $AllowSourceDownloads)
-        $taskRelease = Join-Path $taskRoot 'dist/Voxriva'
+        $taskRelease = Join-Path $taskRoot 'dist/Avunote'
         foreach ($taskSource in Get-ChildItem -LiteralPath (Join-Path $taskRoot 'app') -Filter '*.py' -File) {
             $taskCopied = Join-Path $taskRelease ('app/'+$taskSource.Name)
             if (-not (Test-Path -LiteralPath $taskCopied) -or
@@ -192,17 +202,28 @@ print('Matching-source cache verified.' if not missing else 'Explicit source dow
                 throw 'The source changed during the build or was not copied completely. Wait for editing to finish, then build again.'
             }
         }
-        $taskOutput = Join-Path $taskRoot ("release/Voxriva-$Version-Windows-x64-Setup.exe")
+        $taskOutput = Join-Path $taskRoot ("release/Avunote-$Version-Windows-x64-Setup.exe")
         $taskInstallerArguments = @{ ReleaseDir=$taskRelease; Version=$Version; OutputPath=$taskOutput }
         if ($taskMakensis) { $taskInstallerArguments['Makensis'] = $taskMakensis }
         if ($DownloadNsis) { $taskInstallerArguments['DownloadNsis'] = $true }
+        if ($PreviousManifest) {
+            $taskInstallerArguments['PreviousManifest'] = Resolve-BuildPath $PreviousManifest
+        } else {
+            $taskPrevious = Get-ChildItem -LiteralPath (Join-Path $taskRoot 'release') -Filter 'Avunote-*-Windows-x64-Manifest.json' -File -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    if ($_.Name -match '^Avunote-(\d+\.\d+\.\d+)-Windows-x64-Manifest\.json$' -and [version]$Matches[1] -lt [version]$Version) {
+                        [pscustomobject]@{ Version = [version]$Matches[1]; FullName = $_.FullName }
+                    }
+                } | Sort-Object Version -Descending | Select-Object -First 1
+            if ($taskPrevious) { $taskInstallerArguments['PreviousManifest'] = $taskPrevious.FullName }
+        }
         & (Join-Path $taskRoot 'scripts/build_installer.ps1') @taskInstallerArguments
         if (-not (Test-Path -LiteralPath $taskOutput -PathType Leaf)) { throw 'Installer output was not created.' }
         Write-Host ''
         Write-Host "SETUP READY: $taskOutput" -ForegroundColor Green
         Write-Host "SHA-256: $taskOutput.sha256.txt"
         Write-Host "Portable app: $taskRelease"
-        Write-Host 'Publish the Setup file in GitHub Releases. Keep .local, build, dist, release and model files out of Git.'
+        Write-Host 'GitHub Releases needs the Setup, manifest and any compatible Update-from installer. See docs/UPDATES.md.'
         $taskExit = 0
     }
 } catch {

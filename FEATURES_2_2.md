@@ -1,12 +1,27 @@
-# Voxriva 2.1.1
+# Avunote 2.2.0
 
-## Windows progress-file fix in 2.1.1
+## Continuing voice conversations and new identity
+
+Avunote (آوونوت) is the new name of Voxriva. The executable, Setup, shortcuts,
+window branding and transparent Windows icon use the new identity. Existing
+installations upgrade in place; internal installer and data identities remain
+compatible, preserving models, settings, connections and chats. The existing
+GitHub repository URL is retained.
+
+Inside an AI conversation, record another voice message or select another audio
+file at any time the app is idle. Voice input uses the studio's selected speech
+language, recognition model, device and chunk settings. The recognized words
+are added to an editable draft in the current conversation; pressing Send is
+still required. Audio stays on the device. Saved chats can be reopened and
+continued after restarting the application.
+
+## Windows progress-file fix retained from 2.1.1
 
 Fixes `PermissionError: [WinError 5]` when Windows briefly locks a progress file
 while the interface reads it. Atomic updates retry temporary sharing failures,
 and interface reads allow replacement of the file. An unavailable progress update
 does not stop recognition; transcript and checkpoint save failures remain errors.
-Close Voxriva before installing the update in its existing directory. Existing
+Close Avunote before installing the update in its existing directory. Existing
 models and local profile data are preserved, so models need no repeat download.
 
 ## Processing device and long recordings
@@ -97,7 +112,7 @@ Light, Dark and System themes persist independently of the five interface
 languages. The logo uses a transparent asset and native dark-theme foreground
 rendering. A one-time optional invitation after successful transcription can
 open https://github.com/Fardinmilani/Voxriva. Declining or closing it also marks
-it as seen. Voxriva never performs a GitHub star action or checks your account.
+it as seen. Avunote never performs a GitHub star action or checks your account.
 
 The source package excludes model weights, native runtime libraries, API keys,
 chat history, recordings, build caches, generated release archives and installers.

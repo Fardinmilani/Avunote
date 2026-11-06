@@ -91,7 +91,12 @@ def _resolve_artifacts(model, session):
         length = 64 if name == 'sha256' else 40
         if not re.fullmatch(f'[0-9a-f]{{{length}}}', item.get(name, '')):
             raise ValueError('Invalid integrity hash')
-        relative = '/'.join(filter(None, [model['subfolder'], item['name']]))
+        # Some published models put tokenizer assets in a nested repository
+        # folder; the local cache retains the existing flat and safe filenames.
+        prefix = item.get('remote_prefix')
+        if prefix is not None:
+            _safe_file(prefix)
+        relative = '/'.join(filter(None, [model['subfolder'], prefix, item['name']]))
         item['url'] = f'https://huggingface.co/{model["repo"]}/resolve/{revision}/{quote(relative)}?download=true'
     return artifacts
 
@@ -156,6 +161,10 @@ class DownloadManager:
     def snapshot(self, key):
         with self._lock:
             return dict(self._state(key))
+
+    def active_key(self):
+        with self._lock:
+            return self._active if self._thread and self._thread.is_alive() else None
 
     def _update(self, key, force=False, **values):
         with self._lock:
@@ -241,7 +250,7 @@ class DownloadManager:
 
     def _run(self, key):
         session = requests.Session()
-        session.headers['User-Agent'] = 'Voxriva/2.0 (model downloader; no audio transfer)'
+        session.headers['User-Agent'] = 'Avunote/2.2 (model downloader; no audio transfer)'
         try:
             model = get_model(key)
             folder = model_dir(key)

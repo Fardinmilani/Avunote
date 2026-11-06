@@ -54,8 +54,24 @@ The application license is not used to infer a model's license. Each included ca
 | `multilingual-tiny` | [Systran/faster-whisper-tiny](https://huggingface.co/Systran/faster-whisper-tiny) | This repository's own MIT model-card declaration; original OpenAI MIT notice retained |
 | `multilingual-base` | [Systran/faster-whisper-base](https://huggingface.co/Systran/faster-whisper-base) | This repository's own MIT model-card declaration; original OpenAI MIT notice retained |
 | `multilingual-small` | [Systran/faster-whisper-small](https://huggingface.co/Systran/faster-whisper-small) | This repository's own MIT model-card declaration; original OpenAI MIT notice retained |
+| `parakeet-tdt-v3` | [Sherpa-ONNX Parakeet TDT 0.6B v3 INT8 export](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8) | [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Converted to ONNX and quantized by the Sherpa-ONNX project |
+| `qwen3-asr-06b` | [Sherpa-ONNX Qwen3-ASR 0.6B INT8 export](https://huggingface.co/csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25) | [Alibaba Qwen](https://huggingface.co/Qwen/Qwen3-ASR-0.6B), Apache-2.0. Converted and quantized by Wasser1462; export published by Sherpa-ONNX |
+| `sensevoice-small` | [Sherpa-ONNX SenseVoice Small INT8 export](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17) | [FunAudioLLM SenseVoiceSmall](https://huggingface.co/FunAudioLLM/SenseVoiceSmall), [FunASR Model Open Source License Agreement v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE). Attribution and model name are preserved |
 
 Pinned revisions and exact artifacts are in `app/model_catalog.py`. Adding a future model requires reviewing its own published license, original model provenance and required notices; do not inherit the AZB collection's license by assumption.
+
+## Sherpa-ONNX / ONNX Runtime
+
+The three optional ONNX models run through the unmodified Windows x64 CPU
+wheels [sherpa-onnx 2.0.1](https://pypi.org/project/sherpa-onnx/2.0.1/) and
+[sherpa-onnx-core 2.0.1](https://pypi.org/project/sherpa-onnx-core/2.0.1/).
+Sherpa-ONNX is Apache-2.0. The application packages the Python binding and
+shared libraries. [Sherpa-ONNX release and source](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1).
+
+The core wheel includes Microsoft ONNX Runtime 1.28.2. The build verifies
+the exact Windows x64 DLL before creating Setup. [ONNX Runtime MIT license](licenses/ONNXRuntime-1.28.2/LICENSE)
+and [Microsoft third-party notices](licenses/ONNXRuntime-1.28.2/ThirdPartyNotices.txt)
+are included alongside the [Sherpa-ONNX and native component notices](licenses/Sherpa-ONNX-2.0.1).
 
 ## Qt / PySide6 / Shiboken
 
