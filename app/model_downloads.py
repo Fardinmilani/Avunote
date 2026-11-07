@@ -16,8 +16,57 @@ import requests
 from model_catalog import get_model, model_dir, find_local_model, _safe_file
 
 
+_IN_PROGRESS = frozenset({'resolving', 'downloading', 'verifying'})
+_TIMEOUT = (15, 30)
+_JOIN_TIMEOUT = 20
+_LOCK_CODES = {5, 32, 33}
+
+
 class _Stopped(Exception):
     pass
+
+
+class _Restart(Exception):
+    """The partial bytes cannot be extended safely; download this file from zero."""
+
+
+class DownloadError(Exception):
+    """A failure whose message is already written for the model library."""
+
+
+SSL_UNAVAILABLE = 'اتصال امن HTTPS در این نسخه برنامه در دسترس نیست؛ Avunote را دوباره نصب یا به‌روزرسانی کنید.'
+PROXY_FAILED = 'اتصال از طریق proxy سیستم برقرار نشد؛ VPN یا proxy را بررسی کنید و دوباره تلاش کنید.'
+UNREACHABLE = 'به Hugging Face دسترسی نیست؛ اینترنت، VPN یا proxy را بررسی کنید و دوباره تلاش کنید.'
+SERVER_REFUSED = 'سرور Hugging Face دانلود را نپذیرفت؛ کمی بعد دوباره تلاش کنید.'
+HASH_FAILED = 'هش فایل دانلودشده معتبر نیست؛ دانلود آن فایل را دوباره آغاز کنید.'
+DISK_FULL = 'فضای آزاد دیسک برای مدل کافی نیست.'
+SAVE_FAILED = 'ذخیره فایل مدل ممکن نشد؛ فضای دیسک و دسترسی پوشه را بررسی کنید.'
+GENERIC_FAILURE = 'اتصال و فضای دیسک را بررسی کنید؛ امکان تلاش دوباره وجود دارد.'
+RESUME_BUSY = 'دانلود هنوز در حال توقف است؛ چند لحظه دیگر دوباره تلاش کنید.'
+
+
+def _require_ssl():
+    try:
+        import ssl  # noqa: F401
+    except ImportError as exc:
+        raise DownloadError(SSL_UNAVAILABLE) from exc
+
+
+def describe_error(exc):
+    if isinstance(exc, DownloadError):
+        return str(exc)
+    text = str(exc).lower()
+    if (isinstance(exc, ImportError) or isinstance(exc, requests.exceptions.SSLError)) and 'ssl' in text:
+        return SSL_UNAVAILABLE
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return PROXY_FAILED
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return UNREACHABLE
+    if isinstance(exc, requests.HTTPError):
+        return SERVER_REFUSED
+    if isinstance(exc, OSError):
+        return SAVE_FAILED
+    return GENERIC_FAILURE
 
 
 def _atomic_json(path, value):
@@ -35,12 +84,30 @@ def _validate_url(url):
         raise ValueError('Download host is outside the approved Hugging Face service')
 
 
+def _get(session, url, **kwargs):
+    kwargs.setdefault('timeout', _TIMEOUT)
+    try:
+        return session.get(url, allow_redirects=False, **kwargs)
+    except requests.exceptions.ProxyError as proxy_error:
+        if not session.trust_env:
+            raise
+        # A dead system proxy should not block Hugging Face when it is reachable directly.
+        # Later hops still prefer the system proxy (including 127.0.0.1:10808).
+        session.trust_env = False
+        try:
+            return session.get(url, allow_redirects=False, **kwargs)
+        except requests.RequestException:
+            raise proxy_error from None
+        finally:
+            session.trust_env = True
+
+
 def _request(session, url, **kwargs):
     # Validate *before* each hop rather than following an arbitrary Location first.
     from urllib.parse import urljoin
     for _ in range(8):
         _validate_url(url)
-        response = session.get(url, allow_redirects=False, timeout=(8, 8), **kwargs)
+        response = _get(session, url, **kwargs)
         if response.status_code in (301, 302, 303, 307, 308):
             location = response.headers.get('Location')
             response.close()
@@ -50,6 +117,23 @@ def _request(session, url, **kwargs):
             continue
         return response
     raise ValueError('Too many download redirects')
+
+
+def _replace(source, destination, timeout=8.0):
+    deadline = time.monotonic() + timeout
+    delay = .01
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            remaining = deadline - time.monotonic()
+            locked = getattr(error, 'winerror', None) in _LOCK_CODES or (
+                isinstance(error, PermissionError) and getattr(error, 'winerror', None) is None)
+            if not locked or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, .2)
 
 
 def _resolve_artifacts(model, session):
@@ -143,7 +227,7 @@ class DownloadManager:
         if key not in self._states:
             model = get_model(key)
             value = {'status': 'idle', 'bytes_done': 0, 'bytes_total': model['bytes'],
-                     'speed_bps': 0.0, 'eta_seconds': None, 'error': '', 'file': ''}
+                     'speed_bps': 0.0, 'eta_seconds': None, 'error': '', 'error_detail': '', 'file': ''}
             try:
                 saved = json.loads((model_dir(key)/'download-state.json').read_text(encoding='utf-8'))
                 for name in value:
@@ -187,9 +271,21 @@ class DownloadManager:
     def start(self, key):
         get_model(key)
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            thread = self._thread
+            winding_down = bool(thread and thread.is_alive() and (
+                self._stop.is_set() or self._state(self._active)['status'] not in _IN_PROGRESS))
+            if thread and thread.is_alive() and not winding_down:
                 if self._active == key:
                     return
+                raise RuntimeError('ابتدا دانلود فعال را متوقف کنید؛ هر بار یک مدل دانلود می‌شود.')
+        if winding_down:
+            # The worker already reported pause/error and is only closing; joining
+            # outside the lock lets it finish its final state update.
+            thread.join(timeout=_JOIN_TIMEOUT)
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                if self._active == key:
+                    raise RuntimeError(RESUME_BUSY)
                 raise RuntimeError('ابتدا دانلود فعال را متوقف کنید؛ هر بار یک مدل دانلود می‌شود.')
             if find_local_model(key):
                 self._update(key, force=True, status='completed', bytes_done=get_model(key)['bytes'], error='')
@@ -197,7 +293,8 @@ class DownloadManager:
             self._active = key
             self._stop = threading.Event()
             self._cancel = False
-            self._update(key, force=True, status='resolving', error='', speed_bps=0.0, eta_seconds=None)
+            self._update(key, force=True, status='resolving', error='', error_detail='',
+                         speed_bps=0.0, eta_seconds=None)
             self._thread = threading.Thread(target=self._run, args=(key,), daemon=True, name='model-download')
             self._thread.start()
 
@@ -250,8 +347,10 @@ class DownloadManager:
 
     def _run(self, key):
         session = requests.Session()
-        session.headers['User-Agent'] = 'Avunote/2.2 (model downloader; no audio transfer)'
+        session.headers['User-Agent'] = 'Avunote/2.4 (model downloader; no audio transfer)'
+        session.trust_env = True
         try:
+            _require_ssl()
             model = get_model(key)
             folder = model_dir(key)
             folder.mkdir(parents=True, exist_ok=True)
@@ -265,7 +364,7 @@ class DownloadManager:
                             for x in artifacts if (folder/(x['name']+'.part')).is_file())
             available += sum(x['size'] for x in artifacts if x['name'] in verified_existing)
             if shutil.disk_usage(folder).free < max(0, total-available) + 64*1024*1024:
-                raise OSError('فضای آزاد دیسک برای مدل کافی نیست.')
+                raise DownloadError(DISK_FULL)
             self._update(key, force=True, bytes_total=total)
             finished = 0
             for artifact in artifacts:
@@ -275,14 +374,18 @@ class DownloadManager:
                     finished += artifact['size']
                     self._update(key, bytes_done=finished)
                     continue
-                self._transfer(key, artifact, folder, session, finished)
-                self._update(key, force=True, status='verifying', file=artifact['name'], speed_bps=0.0, eta_seconds=None)
                 partial = folder/(artifact['name']+'.part')
-                if not _matches(partial, artifact, self._checkpoint):
+                for _ in range(2):
+                    self._transfer(key, artifact, folder, session, finished)
+                    self._update(key, force=True, status='verifying', file=artifact['name'], speed_bps=0.0, eta_seconds=None)
+                    if _matches(partial, artifact, self._checkpoint):
+                        break
+                    # Stale or corrupt resumed bytes: the second pass starts this file from zero.
                     partial.unlink(missing_ok=True)
-                    raise ValueError('هش فایل دانلودشده معتبر نیست؛ دانلود آن فایل را دوباره آغاز کنید.')
+                else:
+                    raise DownloadError(HASH_FAILED)
                 self._checkpoint()
-                os.replace(partial, target)
+                _replace(partial, target)
                 finished += artifact['size']
             self._checkpoint()
             provenance = _provenance(model)
@@ -290,58 +393,70 @@ class DownloadManager:
             marker = {**provenance, 'files': [{k: v for k, v in item.items() if k != 'url'} for item in artifacts]}
             _atomic_json(folder/'completed.json', marker)
             self._update(key, force=True, status='completed', bytes_done=total, bytes_total=total,
-                         speed_bps=0.0, eta_seconds=0, error='', file='')
+                         speed_bps=0.0, eta_seconds=0, error='', error_detail='', file='')
         except _Stopped:
             if self._cancel:
                 self._remove_parts(key)
             self._update(key, force=True, status='cancelled' if self._cancel else 'paused',
                          speed_bps=0.0, eta_seconds=None, error='')
         except Exception as exc:
-            self._update(key, force=True, status='error', error=f'{type(exc).__name__}: {exc}',
-                         speed_bps=0.0, eta_seconds=None)
+            cause = exc.__cause__ or exc
+            self._update(key, force=True, status='error', error=describe_error(exc),
+                         error_detail=f'{type(cause).__name__}: {cause}', speed_bps=0.0, eta_seconds=None)
         finally:
             session.close()
 
     def _transfer(self, key, artifact, folder, session, finished):
         partial = folder/(artifact['name']+'.part')
         identity = folder/'transfer.json'
-        for attempt in range(4):
+        revision = get_model(key)['revision']
+        attempts = 6
+        restarts = 0
+        for attempt in range(attempts):
             self._checkpoint()
             offset = partial.stat().st_size if partial.is_file() else 0
             if offset > artifact['size']:
                 partial.unlink()
+                identity.unlink(missing_ok=True)
                 offset = 0
             if offset == artifact['size']:
                 return
-            headers = {}
+            if offset == 0:
+                identity.unlink(missing_ok=True)
+            headers = {'Accept-Encoding': 'identity'}
             if offset:
                 headers['Range'] = f'bytes={offset}-'
                 try:
                     saved = json.loads(identity.read_text(encoding='utf-8'))
-                    if saved.get('file') == artifact['name'] and saved.get('revision') == get_model(key)['revision'] and saved.get('etag'):
-                        headers['If-Range'] = saved['etag']
                 except (OSError, ValueError):
-                    pass
+                    saved = None
+                # Drop a stale lock from another file, revision, or missing validator.
+                if not saved or saved.get('file') != artifact['name'] or saved.get('revision') != revision:
+                    identity.unlink(missing_ok=True)
+                elif saved.get('etag') and not str(saved['etag']).startswith('W/'):
+                    headers['If-Range'] = saved['etag']
             try:
                 with _request(session, artifact['url'], headers=headers, stream=True) as response:
                     if response.status_code == 416:
                         # Complete files are handled above; a stale range is safely restarted.
-                        partial.unlink(missing_ok=True)
-                        continue
+                        raise _Restart()
                     response.raise_for_status()
                     if response.status_code == 206:
                         content_range = response.headers.get('Content-Range', '')
-                        match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', content_range)
-                        if not match or int(match[1]) != offset or int(match[3]) != artifact['size']:
-                            raise ValueError('Invalid Content-Range from model server')
+                        match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)', content_range)
+                        if not match or int(match[1]) != offset or (
+                                match[3] != '*' and int(match[3]) != artifact['size']):
+                            raise _Restart()
                         mode = 'ab'
                     elif response.status_code == 200:
-                        offset = 0  # Server ignored Range or If-Range changed: never append.
+                        offset = 0  # Server ignored Range, redirected to a new object, or If-Range changed.
                         mode = 'wb'
                     else:
-                        raise ValueError('Unexpected model server response')
-                    _atomic_json(identity, {'file': artifact['name'], 'etag': response.headers.get('ETag'),
-                                           'revision': get_model(key)['revision']})
+                        raise ValueError(f'Unexpected model server response: HTTP {response.status_code}')
+                    etag = response.headers.get('ETag') or ''
+                    # If-Range only accepts strong validators; weak ones would force a 200 anyway.
+                    _atomic_json(identity, {'file': artifact['name'], 'revision': revision,
+                                           'etag': None if etag.startswith('W/') else etag or None})
                     started, initial = time.monotonic(), offset
                     self._update(key, force=True, status='downloading', file=artifact['name'], bytes_done=finished+offset)
                     with partial.open(mode) as stream:
@@ -350,7 +465,7 @@ class DownloadManager:
                             if not chunk:
                                 continue
                             if offset+len(chunk) > artifact['size']:
-                                raise ValueError('Model response exceeds declared size')
+                                raise _Restart()
                             stream.write(chunk)
                             offset += len(chunk)
                             elapsed = max(.01, time.monotonic()-started)
@@ -359,12 +474,19 @@ class DownloadManager:
                             left = max(0, self._state(key)['bytes_total']-done)
                             self._update(key, bytes_done=done, speed_bps=speed,
                                          eta_seconds=left/speed if speed > 0 else None)
+                        stream.flush()
                     if offset != artifact['size']:
                         raise requests.ConnectionError('Incomplete model response')
                     return
+            except _Restart:
+                partial.unlink(missing_ok=True)
+                identity.unlink(missing_ok=True)
+                restarts += 1
+                if restarts > 3:
+                    raise requests.ConnectionError('Model download could not be resumed')
             except (requests.RequestException, OSError):
                 self._checkpoint()
-                if attempt == 3:
+                if attempt == attempts-1:
                     raise
                 self._stop.wait(min(4, .5 * 2**attempt))
         raise requests.ConnectionError('Model download did not finish')

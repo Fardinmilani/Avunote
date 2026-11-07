@@ -23,6 +23,10 @@ class Handler(BaseHTTPRequestHandler):
     ranges = []
     interrupted = False
     ranged_416 = False
+    tripped = False
+    if_ranges = []
+    encodings = []
+    redirected = False
 
     def handle(self):
         try:
@@ -34,10 +38,33 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        name = self.path.strip('/')
+        type(self).encodings.append(self.headers.get('Accept-Encoding'))
+        if self.mode == 'redirect' and not self.path.startswith('/cdn/'):
+            type(self).redirected = True
+            self.send_response(302)
+            self.send_header('Location', '/cdn' + self.path)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        name = self.path.strip('/').split('/')[-1]
         data = self.payloads[name]
         offset = int(self.headers.get('Range', 'bytes=0-').split('=')[1].split('-')[0])
         type(self).ranges.append(offset)
+        type(self).if_ranges.append(self.headers.get('If-Range'))
+        if self.mode == 'changed' and self.headers.get('If-Range') and offset:
+            type(self).tripped = True
+            offset = 0
+        once = name == 'model.bin' and not type(self).tripped
+        if self.mode == 'badrange' and offset and once:
+            type(self).tripped = True
+            self.send_response(206)
+            self.send_header('Content-Length', str(len(data)-offset))
+            self.send_header('Content-Range', f'bytes {offset+1}-{len(data)}/{len(data)+1}')
+            self.end_headers()
+            return
+        if self.mode == 'oversize' and not offset and once:
+            type(self).tripped = True
+            data = data + b'extra'*4000
         if self.mode == 'once416' and offset and not type(self).ranged_416:
             type(self).ranged_416 = True
             self.send_response(416)
@@ -53,7 +80,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(206 if offset else 200)
         self.send_header('Content-Length', str(len(data)-offset))
-        self.send_header('ETag', '"fixture"')
+        self.send_header('ETag', 'W/"fixture"' if self.mode == 'weak' else '"fixture"')
         if offset:
             self.send_header('Content-Range', f'bytes {offset}-{len(data)-1}/{len(data)}')
         self.end_headers()
@@ -88,6 +115,7 @@ class Lifecycle(unittest.TestCase):
         self.env = patch.dict(os.environ, {'AZB_DATA_DIR': self.tmp.name, 'VOXRIVA_DATA_DIR': ''})
         self.env.start()
         Handler.mode, Handler.ranges, Handler.interrupted, Handler.ranged_416 = 'range', [], False, False
+        Handler.tripped, Handler.if_ranges, Handler.encodings, Handler.redirected = False, [], [], False
         Handler.payloads = {'config.json': b'{"model_type":"whisper"}', 'model.bin': b'fixture!'*256000,
                             'tokenizer.json': b'{}', 'vocabulary.txt': b'word\n'}
         self.model = {'key': 'fixture', 'title': 'fixture', 'backend': 'faster-whisper',
@@ -191,8 +219,104 @@ class Lifecycle(unittest.TestCase):
         self.manager.start('fixture')
         state=self.wait({'completed','error'})
         self.assertEqual(state['status'],'error')
+        self.assertEqual(state['error'],downloads.HASH_FAILED)
         self.assertIsNone(catalog.find_local_model('fixture'))
         self.assertFalse((catalog.model_dir('fixture')/'completed.json').exists())
+        self.assertFalse((catalog.model_dir('fixture')/'model.bin.part').exists())
+
+    def test_corrupt_partial_is_redownloaded_from_zero(self):
+        folder=catalog.model_dir('fixture'); folder.mkdir(parents=True)
+        (folder/'model.bin.part').write_bytes(b'X'*200000)
+        self.manager.start('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertIn(200000,Handler.ranges)
+        self.assertEqual((folder/'model.bin').read_bytes(),Handler.payloads['model.bin'])
+
+    def test_invalid_content_range_restarts_instead_of_failing(self):
+        self.start_partial(); self.manager.pause('fixture'); self.wait({'paused'})
+        Handler.mode='badrange'
+        self.manager.resume('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(Handler.tripped)
+        self.assertEqual((catalog.model_dir('fixture')/'model.bin').read_bytes(),Handler.payloads['model.bin'])
+
+    def test_oversized_response_restarts(self):
+        Handler.mode='oversize'
+        self.manager.start('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(Handler.tripped)
+        self.assertEqual((catalog.model_dir('fixture')/'model.bin').read_bytes(),Handler.payloads['model.bin'])
+
+    def test_redirect_preserves_range_resume(self):
+        self.start_partial(); self.manager.pause('fixture'); self.wait({'paused'})
+        Handler.mode='redirect'
+        self.manager.resume('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(Handler.redirected)
+        self.assertTrue(any(x>0 for x in Handler.ranges))
+        self.assertTrue(any(value and 'identity' in value for value in Handler.encodings))
+
+    def test_etag_change_rewrites_instead_of_appending(self):
+        self.start_partial(); self.manager.pause('fixture'); self.wait({'paused'})
+        Handler.mode='changed'
+        self.manager.resume('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(Handler.tripped)
+        self.assertEqual((catalog.model_dir('fixture')/'model.bin').read_bytes(),Handler.payloads['model.bin'])
+
+    def test_stale_transfer_lock_is_dropped(self):
+        folder=catalog.model_dir('fixture'); folder.mkdir(parents=True)
+        (folder/'model.bin.part').write_bytes(Handler.payloads['model.bin'][:180000])
+        (folder/'transfer.json').write_text(json.dumps({
+            'file': 'other.bin', 'revision': 'b'*40, 'etag': '"stale"'}), encoding='utf-8')
+        self.manager.start('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(any(x>0 for x in Handler.ranges))
+        self.assertFalse(any(value=='"stale"' for value in Handler.if_ranges))
+
+    def test_weak_etag_is_never_sent_as_if_range(self):
+        Handler.mode='weak'
+        self.start_partial(); self.manager.pause('fixture'); self.wait({'paused'})
+        self.manager.resume('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertTrue(any(x>0 for x in Handler.ranges))
+        self.assertFalse(any(value and value.startswith('W/') for value in Handler.if_ranges))
+
+    def test_missing_ssl_reports_clear_error(self):
+        with patch.dict(sys.modules,{'ssl':None}):
+            self.manager.start('fixture')
+            state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'error')
+        self.assertEqual(state['error'],downloads.SSL_UNAVAILABLE)
+        self.assertRegex(state['error_detail'], r'(ImportError|ModuleNotFoundError)')
+        self.assertEqual(Handler.ranges,[])
+
+    def test_retry_after_connection_error_downloads(self):
+        self.resolve.stop()
+        with patch.object(downloads,'_resolve_artifacts',side_effect=downloads.requests.ConnectionError('offline')):
+            self.manager.start('fixture')
+            state=self.wait({'completed','error'})
+        self.assertEqual(state['error'],downloads.UNREACHABLE)
+        self.assertIn('offline',state['error_detail'])
+        self.resolve.start()
+        self.manager.start('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
+        self.assertEqual((state['error'],state['error_detail']),('',''))
+
+    def test_immediate_resume_after_pause_is_not_ignored(self):
+        self.start_partial()
+        self.manager.pause('fixture')
+        self.manager.resume('fixture')
+        state=self.wait({'completed','error'})
+        self.assertEqual(state['status'],'completed',state)
 
     def test_non_lfs_git_blob_hash(self):
         data=b'hello\n'
@@ -236,6 +360,51 @@ class Lifecycle(unittest.TestCase):
             state=self.wait({'completed','error'})
         self.assertEqual(state['status'],'error')
         self.assertIsNone(catalog.find_local_model('fixture'))
+
+
+class Errors(unittest.TestCase):
+    class Session:
+        def __init__(self, *results):
+            self.trust_env, self.results, self.trust_history = True, list(results), []
+
+        def get(self, url, **kwargs):
+            self.trust_history.append(self.trust_env)
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    def test_dead_system_proxy_falls_back_to_direct(self):
+        session = self.Session(downloads.requests.exceptions.ProxyError('proxy down'), 'response')
+        self.assertEqual(downloads._get(session, 'https://huggingface.co/x'), 'response')
+        self.assertEqual(session.trust_history, [True, False])
+        self.assertTrue(session.trust_env)
+
+    def test_proxy_error_is_kept_when_direct_also_fails(self):
+        proxy = downloads.requests.exceptions.ProxyError('proxy down')
+        session = self.Session(proxy, downloads.requests.ConnectionError('blocked'))
+        with self.assertRaises(downloads.requests.exceptions.ProxyError):
+            downloads._get(session, 'https://huggingface.co/x')
+        self.assertTrue(session.trust_env)
+        self.assertEqual(downloads.describe_error(proxy), downloads.PROXY_FAILED)
+
+    def test_error_messages_are_specific_and_translated(self):
+        import ui_i18n
+        cases = [
+            (ImportError("Can't connect to HTTPS URL because the SSL module is not available."), downloads.SSL_UNAVAILABLE),
+            (downloads.requests.ConnectTimeout('slow'), downloads.UNREACHABLE),
+            (downloads.requests.ReadTimeout('slow'), downloads.UNREACHABLE),
+            (downloads.requests.HTTPError('403'), downloads.SERVER_REFUSED),
+            (PermissionError('denied'), downloads.SAVE_FAILED),
+            (downloads.DownloadError(downloads.DISK_FULL), downloads.DISK_FULL),
+            (downloads.requests.exceptions.SSLError("Can't connect to HTTPS URL because the SSL module is not available"), downloads.SSL_UNAVAILABLE),
+            (ValueError('anything else'), downloads.GENERIC_FAILURE),
+        ]
+        for error, message in cases:
+            with self.subTest(error=error):
+                self.assertEqual(downloads.describe_error(error), message)
+                self.assertIn(message, ui_i18n.EN)
+        self.assertIn(downloads.RESUME_BUSY, ui_i18n.EN)
 
 
 class Security(unittest.TestCase):

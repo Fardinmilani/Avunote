@@ -1,4 +1,5 @@
-param([string]$Python = 'python', [string]$SourceCache = $env:AZB_SOURCE_CACHE, [switch]$OfflineSources)
+param([string]$Python = 'python', [string]$SourceCache = $env:AZB_SOURCE_CACHE, [switch]$OfflineSources,
+      [string]$SelfTestUrl = $(if ($env:AVUNOTE_SELFTEST_URL) { $env:AVUNOTE_SELFTEST_URL } else { 'https://huggingface.co/' }))
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 if (-not (Test-Path -LiteralPath 'vendor/ffmpeg.exe')) {
@@ -7,6 +8,15 @@ if (-not (Test-Path -LiteralPath 'vendor/ffmpeg.exe')) {
 & $Python -m PyInstaller --noconfirm --clean --distpath dist --workpath build studio.spec
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 $taskRelease = Join-Path $PSScriptRoot 'dist/Avunote'
+# The frozen runtime must load its own OpenSSL; otherwise every HTTPS feature fails at run time.
+$taskSelfTest = Join-Path ([IO.Path]::GetTempPath()) ('avunote-selftest-'+[guid]::NewGuid().ToString('N')+'.json')
+$taskSelfTestArgs = @('--self-test', '--output', ('"'+$taskSelfTest+'"'))
+if ($SelfTestUrl) { $taskSelfTestArgs += @('--self-test-url', $SelfTestUrl) }
+$taskProbe = Start-Process -FilePath (Join-Path $taskRelease 'Avunote.exe') -ArgumentList $taskSelfTestArgs -Wait -PassThru -WindowStyle Hidden
+$taskReport = if (Test-Path -LiteralPath $taskSelfTest) { Get-Content -LiteralPath $taskSelfTest -Raw } else { '(no report written)' }
+Remove-Item -LiteralPath $taskSelfTest -ErrorAction SilentlyContinue
+Write-Host $taskReport
+if ($taskProbe.ExitCode -ne 0) { throw 'Frozen SSL/HTTPS self-test failed; the packaged app cannot make HTTPS requests.' }
 New-Item -ItemType Directory -Path (Join-Path $taskRelease 'app') -Force | Out-Null
 Get-ChildItem -LiteralPath app -Filter '*.py' -File | Copy-Item -Destination (Join-Path $taskRelease 'app') -Force
 Copy-Item -LiteralPath README.md, README_FA.md, LICENSE, THIRD_PARTY_NOTICES.md -Destination $taskRelease -Force
