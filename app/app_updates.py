@@ -18,7 +18,11 @@ from urllib.parse import urlsplit
 import requests
 
 
-REPOSITORY = 'Fardinmilani/Voxriva'
+# Canonical public repository after the Voxriva → Avunote rename. GitHub still
+# serves the old name; download URLs may keep /Voxriva/ and redirect.
+REPOSITORY = 'Fardinmilani/Avunote'
+REPOSITORY_ALIASES = (REPOSITORY, 'Fardinmilani/Voxriva')
+GITHUB_PAGE_URL = f'https://github.com/{REPOSITORY}'
 LATEST_URL = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 MAX_INSTALLER_BYTES = 1_500_000_000
 MAX_METADATA_BYTES = 2_000_000
@@ -191,15 +195,39 @@ def baseline_digest(root, current, *, verify_files=False):
         return None
 
 
+def _release_download_url(url, tag, name):
+    if not isinstance(url, str) or not isinstance(tag, str) or not isinstance(name, str):
+        return False
+    parts = urlsplit(url)
+    if (parts.scheme != 'https' or parts.netloc.casefold() != 'github.com'
+            or parts.query or parts.fragment or parts.username or parts.password):
+        return False
+    return any(parts.path.casefold() == f'/{repository}/releases/download/{tag}/{name}'.casefold()
+               for repository in REPOSITORY_ALIASES)
+
+
+def _trusted_github_latest(url):
+    if not isinstance(url, str):
+        return False
+    parts = urlsplit(url)
+    if (parts.scheme != 'https' or parts.netloc.casefold() != 'api.github.com'
+            or parts.query or parts.fragment or parts.username or parts.password):
+        return False
+    path = parts.path
+    if re.fullmatch(r'/repositories/[1-9][0-9]{0,15}/releases/latest', path):
+        return True
+    return any(path.casefold() == f'/repos/{repository}/releases/latest'.casefold()
+               for repository in REPOSITORY_ALIASES)
+
+
 def _asset(row, tag, expected):
-    url = f'https://github.com/{REPOSITORY}/releases/download/{tag}/{expected}'
     if not isinstance(row, dict) or row.get('name') != expected or row.get('state') != 'uploaded':
         return None
+    url = row.get('browser_download_url')
     size = row.get('size')
     digest = row.get('digest')
     # Only use the digest from GitHub's authenticated release metadata.
-    if (not isinstance(row.get('browser_download_url'), str)
-            or row['browser_download_url'].casefold() != url.casefold()
+    if (not _release_download_url(url, tag, expected)
             or type(size) is not int or not 0 < size <= MAX_INSTALLER_BYTES
             or not isinstance(digest, str) or not re.fullmatch('sha256:' + _HASH, digest)):
         return None
@@ -241,18 +269,39 @@ def _read_response(response, maximum):
     return bytes(output)
 
 
-def check_release(current, root=None):
-    baseline = baseline_digest(root, current)
+def _fetch_latest_release(url):
     headers = {'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
                'User-Agent': 'Avunote Windows Updater'}
-    with requests.get(LATEST_URL, headers=headers, timeout=(7, 12),
-                      stream=True, allow_redirects=False) as response:
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        if response.status_code != 200:
-            raise ValueError('Unexpected GitHub release response.')
-        release = parse_release(json.loads(_read_response(response, MAX_METADATA_BYTES)), current, baseline)
+    for _ in range(5):
+        with requests.get(url, headers=headers, timeout=(7, 12),
+                          stream=True, allow_redirects=False) as response:
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get('Location', '')
+                if location.startswith('/'):
+                    location = 'https://api.github.com' + location
+                if not _trusted_github_latest(location):
+                    raise ValueError('The GitHub release API redirected to an untrusted address.')
+                url = location
+                continue
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise ValueError('Unexpected GitHub release response.')
+            return json.loads(_read_response(response, MAX_METADATA_BYTES))
+    raise ValueError('Too many redirects reading GitHub releases.')
+
+
+def check_release(current, root=None):
+    baseline = baseline_digest(root, current)
+    content = None
+    for repository in REPOSITORY_ALIASES:
+        content = _fetch_latest_release(f'https://api.github.com/repos/{repository}/releases/latest')
+        if content is not None:
+            break
+    if content is None:
+        return None
+    release = parse_release(content, current, baseline)
     if release and release.delta and baseline_digest(root, current, verify_files=True) != baseline:
         return Update(release.version, release.setup)
     return release
@@ -281,9 +330,10 @@ def _known_asset(asset):
             rf'Avunote-{_VERSION}-Windows-x64-(?:Setup|Update-from-{_VERSION}-{_HASH})\.exe', name):
         return False
     parts = urlsplit(asset.url)
+    aliases = '|'.join(re.escape(repository) for repository in REPOSITORY_ALIASES)
     return (parts.scheme == 'https' and parts.netloc == 'github.com' and not parts.query
             and not parts.fragment and bool(re.fullmatch(
-                rf'/{REPOSITORY}/releases/download/v?{_VERSION}/{re.escape(name)}', parts.path))
+                rf'/(?:{aliases})/releases/download/v?{_VERSION}/{re.escape(name)}', parts.path, re.I))
             and type(asset.size) is int and 0 < asset.size <= MAX_INSTALLER_BYTES
             and bool(re.fullmatch(_HASH, asset.digest)))
 

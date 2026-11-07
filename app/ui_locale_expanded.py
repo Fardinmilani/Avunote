@@ -77,6 +77,8 @@ Auto-detect|تشخیص خودکار زبان|Otomatik dil algılama|اكتشاف
 Speech model|مدل تبدیل گفتار|Konuşma modeli|نموذج التفريغ|Nitq modeli
 Chat voice uses this language and local speech model.|ویس گفت‌وگو با این زبان و مدل محلی تبدیل می‌شود.|Sohbet sesi bu dil ve yerel modelle yazıya dökülür.|يُفرَّغ صوت المحادثة بهذه اللغة والنموذج المحلي.|Söhbət səsi bu dil və lokal modellə mətnə çevrilir.
 Language is detected automatically by this speech model.|این مدل زبان گفتار را خودکار تشخیص می‌دهد.|Bu model konuşma dilini otomatik algılar.|يكتشف هذا النموذج لغة الكلام تلقائيًا.|Bu model nitq dilini avtomatik tanıyır.
+Don't ask again|دیگر نپرس|Bir daha sorma|لا تسأل مرة أخرى|Bir daha soruşma
+Maybe later|شاید بعداً|Belki sonra|ربما لاحقًا|Bəlkə sonra
 """
 
 # Spanish, French, German, Brazilian Portuguese, Russian, Simplified Chinese,
@@ -363,6 +365,8 @@ Speech recognition stays on this device.|El reconocimiento se hace en tu disposi
 Microphone level|Nivel del micrófono|Niveau du microphone|Mikrofonpegel|Nível do microfone|Уровень микрофона|麦克风音量|マイクレベル
 Discuss this transcript|Comentar esta transcripción|Discuter de cette transcription|Dieses Transkript besprechen|Conversar sobre esta transcrição|Обсудить эту расшифровку|讨论这段转写|この文字起こしについて話す
 No thanks|No, gracias|Non merci|Nein, danke|Não, obrigado|Нет, спасибо|不用了|いいえ
+Don't ask again|No volver a preguntar|Ne plus demander|Nicht mehr fragen|Não perguntar de novo|Больше не спрашивать|不再询问|今後表示しない
+Maybe later|Quizá más tarde|Peut-être plus tard|Vielleicht später|Talvez depois|Может быть позже|以后再说|あとで
 Open GitHub repository|Abrir repositorio de GitHub|Ouvrir le dépôt GitHub|GitHub-Repository öffnen|Abrir repositório no GitHub|Открыть репозиторий GitHub|打开 GitHub 仓库|GitHub リポジトリを開く
 Audio is transcribed locally with your selected speech model. Review the text, then Send.|El modelo seleccionado transcribe el audio en tu equipo. Revisa el texto antes de enviarlo.|Le modèle choisi transcrit l’audio sur votre appareil. Relisez le texte avant l’envoi.|Das gewählte Modell transkribiert Audio auf deinem Gerät. Prüfe den Text vor dem Senden.|O modelo selecionado transcreve o áudio no seu dispositivo. Revise o texto antes de enviar.|Выбранная модель распознаёт аудио на устройстве. Проверьте текст перед отправкой.|所选模型会在本机转写音频。检查文本后再发送。|選択した音声モデルで端末内で文字起こしします。確認してから送信してください。
 Speech processing stopped. Your draft is preserved.|Se detuvo el procesamiento de voz. Se conservó el borrador.|Le traitement vocal a été arrêté. Votre brouillon est conservé.|Sprachverarbeitung gestoppt. Dein Entwurf bleibt erhalten.|O processamento de voz foi interrompido. Seu rascunho foi mantido.|Обработка речи остановлена. Черновик сохранён.|语音处理已停止，草稿已保留。|音声処理を停止しました。下書きは保持されます。

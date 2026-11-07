@@ -1,9 +1,13 @@
 # Publishing Avunote updates
 
-Avunote checks the latest stable public release of `Fardinmilani/Voxriva`. The release
-tag must match `VERSION` with an optional lowercase `v` prefix, for example `v2.4.0`.
-Checks start only from a Windows Setup installation. Set
-`AVUNOTE_DISABLE_UPDATES=1` to disable them in managed or offline environments.
+Avunote checks the latest stable public release of `Fardinmilani/Avunote`. The
+repository was renamed from `Fardinmilani/Voxriva`; the updater still accepts that
+former API name, GitHub redirects (including `/repositories/<id>/releases/latest`),
+and Setup download URLs that keep `/Voxriva/` in the path. No published stable
+release is treated as up to date, not as a failure. The release tag must match
+`VERSION` with an optional lowercase `v` prefix, for example `v2.4.0`. Checks
+start only from a Windows Setup installation. Set `AVUNOTE_DISABLE_UPDATES=1` to
+disable them in managed or offline environments.
 
 Run `BUILD_SETUP.cmd` and attach these build outputs to the matching GitHub Release.
 

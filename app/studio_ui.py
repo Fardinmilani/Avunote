@@ -25,7 +25,7 @@ from ui_i18n import (tr, set_language, current_language, UI_LANGUAGES,
 from studio_theme import (COLORS, THEMES, ChevronComboBox, animations_enabled, asset_root, load_fonts,
                           native_palette, resolve_theme, stylesheet as theme_stylesheet)
 from atomic_files import atomic_write_text, read_text_shared
-from app_updates import running_version
+from app_updates import GITHUB_PAGE_URL, running_version
 from studio_icons import icon
 
 register_speech_languages(LANGUAGES)
@@ -1704,11 +1704,11 @@ class Studio(QMainWindow):
     def maybe_prompt_star(self):
         """One optional invitation; never signs in or stars on the user's behalf."""
         if (self.star_prompt_seen or not self.allow_star_prompt or self.closing or
-                not self.isVisible() or self.busy or self.recording or self.pages.currentIndex() != 0 or
+                not self.isVisible() or self.busy or self.recording or
                 QApplication.platformName() == 'offscreen'):
             return
         self.star_prompt_seen = True
-        # Persist before showing so closing the dialog or the app cannot repeat it.
+        # Persist before showing so any answer, including Maybe later, cannot repeat it.
         if not self.save_settings():
             self.star_prompt_seen = False
             return
@@ -1716,11 +1716,11 @@ class Studio(QMainWindow):
         box.setWindowTitle(tr('از Avunote حمایت کنید'))
         box.setText(tr('اگر Avunote برایتان مفید بود، می‌توانید به مخزن آن در گیت‌هاب ستاره بدهید. این پیشنهاد فقط یک‌بار نمایش داده می‌شود.'))
         open_button = box.addButton(tr('بازکردن مخزن گیت‌هاب'), QMessageBox.ButtonRole.ActionRole)
-        box.addButton(tr('قبلاً ستاره داده‌ام'), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(tr('نه، ممنون'), QMessageBox.ButtonRole.RejectRole)
+        box.addButton(tr('دیگر نپرس'), QMessageBox.ButtonRole.RejectRole)
+        box.addButton(tr('شاید بعداً'), QMessageBox.ButtonRole.AcceptRole)
         box.exec()
         if box.clickedButton() is open_button:
-            QDesktopServices.openUrl(QUrl('https://github.com/Fardinmilani/Voxriva'))
+            QDesktopServices.openUrl(QUrl(GITHUB_PAGE_URL))
 
     def copy_text(self):
         QApplication.clipboard().setText(self.raw_text)
@@ -1811,7 +1811,7 @@ class Studio(QMainWindow):
         box.setText('<b>Avunote</b><p>' + tr('توسعه‌دهنده برنامه') + ': <b>Fardin Milani</b><br>'
                     '<a href="https://github.com/Fardinmilani">GitHub / Fardinmilani</a> · '
                     '<a href="https://fardinmilani.ir">fardinmilani.ir</a><br>'
-                    '<a href="https://github.com/Fardinmilani/Voxriva">Avunote / GitHub</a></p><p>' +
+                    f'<a href="{GITHUB_PAGE_URL}">Avunote / GitHub</a></p><p>' +
                     tr('برنامه متن‌باز است؛ مجوز کد اختصاصی برنامه MIT است.') + '</p><p>' +
                     tr('مدل‌های آذربایجانی جنوبی: مؤسسه Kartal Ol') + '<br>'
                     '<a href="https://github.com/Kartalol">github.com/Kartalol</a><br>' +

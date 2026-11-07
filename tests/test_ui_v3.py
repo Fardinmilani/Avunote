@@ -113,6 +113,7 @@ class NewUiTests(unittest.TestCase):
     def test_star_invitation_is_persisted_before_one_optional_dialog(self):
         self.window.allow_star_prompt = True
         self.window.show();self.app.processEvents()
+        self.window.pages.setCurrentIndex(3)
         with patch.object(QApplication, 'platformName', return_value='windows'), \
              patch.object(QMessageBox, 'exec', return_value=0) as execute, \
              patch.object(QMessageBox, 'clickedButton', return_value=None), \
@@ -121,6 +122,28 @@ class NewUiTests(unittest.TestCase):
             self.window.maybe_prompt_star()
             self.assertEqual(execute.call_count, 1)
             open_url.assert_not_called()
+        saved=json.loads((Path(self.folder.name)/'settings.json').read_text(encoding='utf-8'))
+        self.assertTrue(saved['star_prompt_seen'])
+
+    def test_star_invitation_opens_canonical_repo_once_and_skips_screenshot_mode(self):
+        self.window.allow_star_prompt = False
+        self.window.show();self.app.processEvents()
+        with patch.object(QApplication, 'platformName', return_value='windows'), \
+             patch.object(QMessageBox, 'exec') as execute:
+            self.window.maybe_prompt_star()
+            execute.assert_not_called()
+        self.window.allow_star_prompt = True
+        open_button = object()
+        with patch.object(QApplication, 'platformName', return_value='windows'), \
+             patch.object(QMessageBox, 'addButton', return_value=open_button), \
+             patch.object(QMessageBox, 'exec', return_value=0), \
+             patch.object(QMessageBox, 'clickedButton', return_value=open_button), \
+             patch.object(studio_ui.QDesktopServices, 'openUrl') as open_url:
+            self.window.maybe_prompt_star()
+            open_url.assert_called_once()
+            self.assertEqual(open_url.call_args.args[0].toString(), studio_ui.GITHUB_PAGE_URL)
+            self.window.maybe_prompt_star()
+            self.assertEqual(open_url.call_count, 1)
         saved=json.loads((Path(self.folder.name)/'settings.json').read_text(encoding='utf-8'))
         self.assertTrue(saved['star_prompt_seen'])
 

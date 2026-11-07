@@ -111,7 +111,7 @@ Official references: [Gemini API](https://aistudio.google.com/api-reference/gene
 Light, Dark and System themes persist independently of the five interface
 languages. The logo uses a transparent asset and native dark-theme foreground
 rendering. A one-time optional invitation after successful transcription can
-open https://github.com/Fardinmilani/Voxriva. Declining or closing it also marks
+open https://github.com/Fardinmilani/Avunote. Declining, choosing Maybe later, or closing it also marks
 it as seen. Avunote never performs a GitHub star action or checks your account.
 
 The source package excludes model weights, native runtime libraries, API keys,

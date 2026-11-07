@@ -79,6 +79,8 @@ V3_ROWS = [
     ('بازکردن مخزن گیت‌هاب', 'Open GitHub repository', 'GitHub deposunu aç', 'افتح مستودع GitHub', 'GitHub deposunu aç'),
     ('قبلاً ستاره داده‌ام', 'Already starred', 'Zaten yıldız verdim', 'منحت نجمة بالفعل', 'Artıq ulduz vermişəm'),
     ('نه، ممنون', 'No thanks', 'Hayır, teşekkürler', 'لا، شكرًا', 'Xeyr, təşəkkürlər'),
+    ('دیگر نپرس', "Don't ask again", 'Bir daha sorma', 'لا تسأل مرة أخرى', 'Bir daha soruşma'),
+    ('شاید بعداً', 'Maybe later', 'Belki sonra', 'ربما لاحقًا', 'Bəlkə sonra'),
     ('تشخیص گفتار محلی است. گفت‌وگوی ابری فقط با ارسال صریح کاربر، متن انتخابی را به سرویس تنظیم‌شده می‌فرستد.',
      'Speech recognition is local. Cloud chat sends selected text to the configured provider only when you explicitly send it.',
      'Konuşma tanıma yereldir. Bulut sohbeti, seçilen metni yalnızca siz açıkça gönderdiğinizde yapılandırılan sağlayıcıya iletir.',

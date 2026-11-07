@@ -10,14 +10,43 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 
+import requests
 import app_updates as updates
 
 
+class _ApiResponse:
+    def __init__(self, status, payload=None, location=None):
+        self.status_code = status
+        self.headers = {'Location': location} if location else {}
+        if payload is None:
+            self._body = b''
+        elif isinstance(payload, bytes):
+            self._body = payload
+        else:
+            self._body = json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            error = requests.HTTPError(str(self.status_code))
+            error.response = self
+            raise error
+
+    def iter_content(self, size):
+        yield self._body
+
+
 class UpdateTests(unittest.TestCase):
-    def _asset(self, name, size=1000, digest='b' * 64):
+    def _asset(self, name, size=1000, digest='b' * 64, repository=None):
+        repository = repository or updates.REPOSITORY
         return {
             'name': name, 'state': 'uploaded', 'size': size, 'digest': 'sha256:' + digest,
-            'browser_download_url': f'https://github.com/{updates.REPOSITORY}/releases/download/v2.4.1/{name}',
+            'browser_download_url': f'https://github.com/{repository}/releases/download/v2.4.1/{name}',
         }
 
     def _release(self, *assets):
@@ -105,6 +134,52 @@ class UpdateTests(unittest.TestCase):
                                  root / name)
                 self.assertEqual(progress, [len(data)])
                 self.assertTrue(updates.verify_staged(root / name, good))
+
+    def test_missing_releases_and_same_or_older_tags_are_up_to_date(self):
+        responses = [_ApiResponse(404), _ApiResponse(404)]
+
+        def missing(url, **kwargs):
+            self.assertIn(url, {
+                'https://api.github.com/repos/Fardinmilani/Avunote/releases/latest',
+                'https://api.github.com/repos/Fardinmilani/Voxriva/releases/latest',
+            })
+            return responses.pop(0)
+
+        with patch.object(updates.requests, 'get', side_effect=missing):
+            self.assertIsNone(updates.check_release('2.4.0'))
+        current = self._release(self._asset(updates.setup_name('2.4.1')))
+        current['tag_name'] = 'v2.4.0'
+        with patch.object(updates.requests, 'get', return_value=_ApiResponse(200, current)):
+            self.assertIsNone(updates.check_release('2.4.0'))
+
+    def test_follows_rename_redirects_and_legacy_voxriva_download_urls(self):
+        setup = self._asset(updates.setup_name('2.4.1'), repository='Fardinmilani/Voxriva')
+        payload = self._release(setup)
+        responses = [
+            _ApiResponse(301, location='https://api.github.com/repositories/1444103502/releases/latest'),
+            _ApiResponse(200, payload),
+        ]
+        with patch.object(updates.requests, 'get', side_effect=lambda url, **kwargs: responses.pop(0)):
+            release = updates.check_release('2.4.0')
+        self.assertEqual(release.version, '2.4.1')
+        self.assertEqual(release.setup.url, setup['browser_download_url'])
+
+    def test_falls_back_to_former_repository_name_when_new_name_has_no_release(self):
+        setup = self._asset(updates.setup_name('2.4.1'), repository='Fardinmilani/Voxriva')
+        responses = [_ApiResponse(404), _ApiResponse(200, self._release(setup))]
+        with patch.object(updates.requests, 'get', side_effect=lambda url, **kwargs: responses.pop(0)):
+            self.assertEqual(updates.check_release('2.4.0').setup.url, setup['browser_download_url'])
+
+    def test_skips_prerelease_and_rejects_assets_without_github_digest(self):
+        setup = self._asset(updates.setup_name('2.4.1'))
+        pre = self._release(setup)
+        pre['prerelease'] = True
+        with patch.object(updates.requests, 'get', return_value=_ApiResponse(200, pre)):
+            self.assertIsNone(updates.check_release('2.4.0'))
+        with patch.object(updates.requests, 'get',
+                          return_value=_ApiResponse(200, self._release(dict(setup, digest=None)))):
+            with self.assertRaises(ValueError):
+                updates.check_release('2.4.0')
 
 
 if __name__ == '__main__':
