@@ -216,7 +216,9 @@ class ProfileDialog(QDialog):
     def __init__(self, profile=None, parent=None):
         super().__init__(parent);self.existing=profile or {};self.setWindowTitle(t('Edit connection' if self.existing else 'Add connection'));self.resize(560,430)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if current_language() in {'fa','ar'} else Qt.LayoutDirection.LeftToRight)
-        layout=QVBoxLayout(self);form=QFormLayout();layout.addLayout(form)
+        layout=QVBoxLayout(self);form=QFormLayout()
+        title=QLabel(self.windowTitle());title.setObjectName('dialogTitle');layout.addWidget(title);layout.addSpacing(6)
+        layout.addLayout(form)
         self.name=QLineEdit(self.existing.get('name',''))
         self.provider=ChevronComboBox();self.provider.addItem('Google AI Studio / Gemini','gemini');self.provider.addItem(t('OpenAI-compatible / LM Studio'),'openai-compatible');self.provider.addItem(t('Local Ollama'),'ollama')
         self.base=QLineEdit(self.existing.get('base_url','https://generativelanguage.googleapis.com/v1beta'))
@@ -228,7 +230,7 @@ class ProfileDialog(QDialog):
         self.clear_key=QCheckBox(t('Forget existing key'))
         for name,field in [('Name',self.name),('Provider',self.provider),('API base URL',self.base),('Model name',self.model),('API key',self.key)]:form.addRow(t(name),field)
         layout.addWidget(self.remember);layout.addWidget(self.clear_key)
-        hint=QLabel(t('Keys stay out of the source repository. Local AI requires a running local server and an installed model.'));hint.setWordWrap(True);layout.addWidget(hint)
+        hint=QLabel(t('Keys stay out of the source repository. Local AI requires a running local server and an installed model.'));hint.setWordWrap(True);hint.setObjectName('muted');layout.addWidget(hint)
         if not persistent_keys_available():
             notice=QLabel(t('This platform keeps API keys in memory for this session only.'));notice.setWordWrap(True);layout.addWidget(notice)
         self.error=QLabel('');self.error.setTextFormat(Qt.TextFormat.PlainText);self.error.setWordWrap(True);layout.addWidget(self.error)

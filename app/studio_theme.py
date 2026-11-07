@@ -5,10 +5,13 @@ import os
 from pathlib import Path
 from string import Template
 import sys
+import tempfile
+import unicodedata
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QComboBox
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QColor, QFontDatabase, QImage, QPainter, QPalette, QPen
+from PySide6.QtWidgets import (QComboBox, QStyle, QStyledItemDelegate, QStyleOptionComboBox, QStylePainter,
+                               QToolTip)
 
 THEMES = ('system', 'light', 'dark')
 
@@ -25,6 +28,8 @@ COLORS = {
         good='#13733A', good_bg='#EEF9F1', warn='#8A5200', warn_bg='#FFF6E0',
         danger='#BE1E1E', danger_bg='#FFF0EF', thumb='#C9C9CF',
         hero='#FFFFFF', wave='#C9C9CF', chat_reply='#FFFFFF', chat_user='#F4F4F5',
+        elevated='#FFFFFF', elevated_hover='#F1F1F3', thumb_hover='#A1A1AA',
+        tip_bg='#18181B', tip_ink='#FAFAFA', tip_line='#18181B',
     ),
     'dark': dict(
         canvas='#0B0B0C', rail='#111113', surface='#18181B', inset='#0F0F10',
@@ -36,6 +41,8 @@ COLORS = {
         good='#5BE08C', good_bg='#0E2416', warn='#FBC23C', warn_bg='#2A1F06',
         danger='#FF8A8A', danger_bg='#2C1212', thumb='#3F3F46',
         hero='#111113', wave='#3A3A40', chat_reply='#0B0B0C', chat_user='#1A1A1D',
+        elevated='#1E1E22', elevated_hover='#2A2A2F', thumb_hover='#5A5A63',
+        tip_bg='#26262B', tip_ink='#F4F4F5', tip_line='#3A3A41',
     ),
 }
 
@@ -86,16 +93,66 @@ def animations_enabled():
     return True
 
 
+def base_direction(text):
+    """Return 'rtl', 'ltr' or None from the first strong character (Unicode rule P2)."""
+    for char in text or '':
+        kind = unicodedata.bidirectional(char)
+        if kind == 'L':
+            return 'ltr'
+        if kind in ('R', 'AL'):
+            return 'rtl'
+    return None
+
+
+def bidi_embed(text, rtl):
+    """Keep a run in its own reading order when it disagrees with the paragraph direction."""
+    direction = base_direction(text)
+    if rtl and direction == 'ltr':
+        return '\u202a' + text + '\u202c'
+    if not rtl and direction == 'rtl':
+        return '\u202b' + text + '\u202c'
+    return text
+
+
+class _BidiItemDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.text = bidi_embed(option.text, option.direction == Qt.LayoutDirection.RightToLeft)
+
+
 class ChevronComboBox(QComboBox):
-    """Theme the disclosure mark while retaining Qt's native popup and keyboard handling."""
+    """Theme the disclosure mark while retaining Qt's native popup and keyboard handling.
+
+    Long values are elided (full text on hover) and mixed Persian/Latin values keep their
+    own reading order instead of being reordered by the surrounding layout direction.
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setProperty('customChevron', True)
         self.setMinimumHeight(44)
+        self.setItemDelegate(_BidiItemDelegate(self))
+        self._elided = False
 
     def paintEvent(self, event):
-        super().paintEvent(event)
+        if self.isEditable():
+            super().paintEvent(event)
+        else:
+            painter = QStylePainter(self)
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+            if self.currentIndex() < 0 and self.placeholderText():
+                option.palette.setBrush(QPalette.ColorRole.ButtonText, option.palette.placeholderText())
+                option.currentText = self.placeholderText()
+            field = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, option,
+                                                QStyle.SubControl.SC_ComboBoxEditField, self)
+            width = field.width() - (option.iconSize.width() + 4 if not option.currentIcon.isNull() else 0)
+            elided = self.fontMetrics().elidedText(option.currentText, Qt.TextElideMode.ElideRight, max(0, width))
+            self._elided = elided != option.currentText
+            option.currentText = bidi_embed(elided, self.layoutDirection() == Qt.LayoutDirection.RightToLeft)
+            painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+            painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+            painter.end()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(self.palette().color(QPalette.ColorRole.ButtonText), 1.4,
@@ -104,6 +161,12 @@ class ChevronComboBox(QComboBox):
         y = self.height()//2
         painter.drawLine(x-4, y-2, x, y+2)
         painter.drawLine(x, y+2, x+4, y-2)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ToolTip and self._elided and not self.toolTip():
+            QToolTip.showText(event.globalPos(), self.currentText(), self)
+            return True
+        return super().event(event)
 
 
 def resolve_theme(choice, color_scheme=None):
@@ -121,8 +184,8 @@ def native_palette(theme):
         (QPalette.ColorRole.Text, 'text'), (QPalette.ColorRole.PlaceholderText, 'faint'),
         (QPalette.ColorRole.Button, 'surface'), (QPalette.ColorRole.ButtonText, 'text'),
         (QPalette.ColorRole.Highlight, 'signal'), (QPalette.ColorRole.HighlightedText, 'signal_ink'),
-        (QPalette.ColorRole.Link, 'brand'), (QPalette.ColorRole.ToolTipBase, 'text'),
-        (QPalette.ColorRole.ToolTipText, 'canvas'),
+        (QPalette.ColorRole.Link, 'brand'), (QPalette.ColorRole.ToolTipBase, 'tip_bg'),
+        (QPalette.ColorRole.ToolTipText, 'tip_ink'),
     ):
         palette.setColor(role, QColor(colors[key]))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
@@ -161,6 +224,7 @@ QLabel#modelNotice[tone="ready"] {color: $good; border-$start-color: $good;}
 QLabel#modelNotice[tone="warning"] {color: $warn; border-$start-color: $warn;}
 QLabel#modelNotice[tone="error"] {color: $danger; border-$start-color: $danger;}
 QLabel#modelNotice[tone="info"] {color: $brand; border-$start-color: $signal;}
+QLabel#modelStatus[tone="idle"] {color: $faint;}
 QLabel#modelStatus[tone="ready"] {color: $good;}
 QLabel#modelStatus[tone="warning"] {color: $warn;}
 QLabel#modelStatus[tone="error"] {color: $danger;}
@@ -218,14 +282,23 @@ QComboBox:hover, QLineEdit:hover {border-bottom-color: $text;}
 QComboBox::drop-down {border: 0; width: 30px;}
 QComboBox[customChevron="true"]::down-arrow {image: none;}
 QComboBox QAbstractItemView, QMenu {
-    background: $surface; color: $text; border: 1px solid $line_strong; padding: 6px;
-    selection-background-color: $hover; selection-color: $text; outline: 0;
+    background: $elevated; color: $text; border: 1px solid $line_strong; padding: 6px;
+    selection-background-color: $elevated_hover; selection-color: $text; outline: 0;
 }
-QComboBox QAbstractItemView::item {min-height: 32px; padding: 4px 8px;}
-QMenu::item {padding: 8px 24px 8px 12px; border-radius: 6px;}
-QMenu::item:selected {background: $hover; color: $text;}
+QComboBox QAbstractItemView::item {
+    min-height: 34px; padding: 0 10px; border-radius: 6px; border: 0;
+    border-$start: 2px solid transparent;
+}
+QComboBox QAbstractItemView::item:hover {background: $elevated_hover; color: $text;}
+QComboBox QAbstractItemView::item:selected {
+    background: $elevated_hover; color: $text; border-$start: 2px solid $signal;
+}
+QComboBox QAbstractItemView::item:disabled {color: $disabled_ink;}
+QMenu::item {padding: 9px 28px 9px 12px; border-radius: 6px; margin: 1px 0;}
+QMenu::item:selected {background: $elevated_hover; color: $text;}
 QMenu::item:disabled {color: $disabled_ink;}
-QMenu::separator {height: 1px; background: $line; margin: 6px 4px;}
+QMenu::icon {padding-$start: 10px;}
+QMenu::separator {height: 1px; background: $line; margin: 6px 6px;}
 QComboBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled {
     background: $disabled; color: $disabled_ink; border-bottom-color: $line_strong;
 }
@@ -236,8 +309,17 @@ QComboBox QLineEdit, QComboBox QLineEdit:focus, QComboBox QLineEdit:hover, QComb
 }
 QListWidget:focus, QTextBrowser:focus, QTableWidget:focus {border: 1px solid $focus;}
 QCheckBox {spacing: 10px; padding: 4px 0;}
-QCheckBox::indicator {width: 18px; height: 18px;}
-QCheckBox:focus {color: $text; border-bottom: 2px solid $focus;}
+QCheckBox::indicator {
+    width: 16px; height: 16px; border: 1px solid $outline; border-radius: 5px; background: $surface;
+}
+QCheckBox::indicator:hover {border-color: $text;}
+QCheckBox::indicator:checked {background: $action; border-color: $action; image: url("$check");}
+QCheckBox::indicator:checked:hover {background: $action_hover; border-color: $action_hover;}
+QCheckBox::indicator:disabled {background: $disabled; border-color: $line_strong;}
+QCheckBox::indicator:checked:disabled {background: $line_strong; border-color: $line_strong;}
+QCheckBox:disabled {color: $disabled_ink;}
+QCheckBox:focus {color: $text;}
+QCheckBox::indicator:focus {border: 2px solid $focus;}
 
 QWidget#transcriptEmpty {background: transparent;}
 QTextEdit#transcript {
@@ -265,7 +347,8 @@ QTableWidget {
     selection-background-color: $rail; selection-color: $text;
 }
 QTableWidget::item {padding: 0 12px; border-bottom: 1px solid $line;}
-QTableWidget::item:selected {background: $rail; color: $text; border-bottom: 1px solid $signal;}
+QTableWidget::item:hover {background: $rail;}
+QTableWidget::item:selected {background: $hover; color: $text; border-bottom: 1px solid $signal;}
 QHeaderView::section {
     background: $canvas; color: $faint; padding: 10px 12px; border: 0;
     border-bottom: 1px solid $line_strong; font-size: 12px; font-weight: 600;
@@ -275,14 +358,53 @@ QScrollBar:vertical {background: transparent; width: 10px; margin: 0;}
 QScrollBar::handle:vertical {background: $thumb; border-radius: 3px; min-height: 32px; margin: 2px;}
 QScrollBar:horizontal {background: transparent; height: 10px; margin: 0;}
 QScrollBar::handle:horizontal {background: $thumb; border-radius: 3px; min-width: 32px; margin: 2px;}
+QScrollBar::handle:hover {background: $thumb_hover;}
+QScrollBar::handle:pressed {background: $outline;}
 QScrollBar::add-line, QScrollBar::sub-line {width: 0; height: 0;}
 QScrollBar::add-page, QScrollBar::sub-page {background: transparent;}
-QToolTip {background: $text; color: $canvas; border: 0; padding: 6px 10px;}
+QToolTip {
+    background: $tip_bg; color: $tip_ink; border: 1px solid $tip_line; border-radius: 6px;
+    padding: 6px 10px; font-size: 12px; font-weight: 500;
+}
+
+QLabel#dialogTitle {font-family: "$display_font"; font-size: 20px; font-weight: 600; color: $text;}
+QDialogButtonBox QPushButton, QMessageBox QPushButton {
+    min-height: 38px; min-width: 88px; padding: 0 18px; border-radius: 19px;
+}
+QDialogButtonBox QPushButton:default {background: $action; color: $action_ink; border-color: $action; font-weight: 600;}
+QDialogButtonBox QPushButton:default:hover {background: $action_hover; border-color: $action_hover;}
+QDialogButtonBox QPushButton:default:disabled {background: $disabled; color: $disabled_ink; border-color: $line;}
 """)
 
 
+def check_mark(color):
+    """Write a crisp checkmark (1x and @2x) for QSS, which can only reference image files."""
+    folder = Path(tempfile.gettempdir())/'avunote-ui'
+    path = folder/f'check-{color.lstrip("#").lower()}.png'
+    if path.exists():
+        return path.as_posix()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        for scale, target in ((1, path), (2, path.with_name(path.stem + '@2x.png'))):
+            image = QImage(18*scale, 18*scale, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.scale(scale, scale)
+            painter.setPen(QPen(QColor(color), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                Qt.PenJoinStyle.RoundJoin))
+            painter.drawPolyline([QPointF(4.5, 9.4), QPointF(7.6, 12.4), QPointF(13.5, 5.8)])
+            painter.end()
+            image.save(str(target))
+    except OSError:
+        return ''
+    return path.as_posix()
+
+
 def stylesheet(resolved, rtl=False):
+    colors = COLORS[resolved]
     return _STYLE.substitute(
-        COLORS[resolved], **font_roles(rtl), alignment='right' if rtl else 'left',
+        colors, **font_roles(rtl), alignment='right' if rtl else 'left',
         start='right' if rtl else 'left', end='left' if rtl else 'right',
+        check=check_mark(colors['action_ink']),
     )

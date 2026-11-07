@@ -416,6 +416,11 @@ class OpenRouterAuthTests(unittest.TestCase):
         self.assertEqual(received['path'], '/api/v1/auth/keys')
         self.assertEqual(received['body']['code_challenge_method'], 'S256')
 
+    def test_persian_api_key_ellipsis_stays_after_latin(self):
+        label = openrouter_auth._MORE['fa'][6]
+        self.assertIn('API\u200e…', label)
+        self.assertTrue(label.startswith('استفاده از کلید'))
+
 
 if __name__ == '__main__':
     unittest.main()

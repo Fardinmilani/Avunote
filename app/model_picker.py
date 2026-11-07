@@ -27,38 +27,41 @@ class ModelChoice:
 
 _STYLE = Template("""
 QFrame#modelPickerPopup {
-    background: $surface; border: 1px solid $line_strong; border-radius: 12px;
+    background: $elevated; border: 1px solid $line_strong; border-radius: 12px;
 }
-QWidget#modelPickerContent {background: $surface;}
-QFrame#modelPickerRow {background: $surface; border: 0; border-bottom: 1px solid $line;}
+QScrollArea, QWidget#modelPickerContent {background: transparent; border: 0;}
+QFrame#modelPickerRow {background: transparent; border: 0; border-radius: 8px;}
+QFrame#modelPickerRow:hover {background: $elevated_hover;}
 QLabel#modelChoiceTitle {color: $text; font-size: 14px; font-weight: 600;}
-QLabel#modelChoiceStatus {color: $faint; font-size: 12px;}
+QLabel#modelChoiceStatus {color: $muted; font-size: 12px;}
 QPushButton#modelChoiceSelect {
-    background: $surface; border: 1px solid transparent; border-radius: 8px;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
     color: $text; text-align: $alignment; padding: 9px 12px; font-weight: 600;
 }
 QPushButton#modelChoiceSelect:checked {
-    background: $rail; color: $text; border-radius: 0; border-$start: 2px solid $signal;
+    background: $elevated_hover; color: $text; border-$start: 2px solid $signal;
 }
-QPushButton#modelChoiceSelect:hover {background: $hover;}
+QPushButton#modelChoiceSelect:hover {background: $elevated_hover;}
 QToolButton#modelDownloadAction {
-    background: transparent; border: 1px solid $signal; border-radius: 22px; padding: 0;
+    background: $brand_soft; border: 1px solid $brand_line; border-radius: 18px; padding: 0;
 }
-QToolButton#modelDownloadAction:hover {background: $brand_soft;}
-QToolButton#modelDownloadAction:disabled {background: $disabled; border-color: $line;}
+QToolButton#modelDownloadAction:hover {background: $signal; border-color: $signal;}
+QToolButton#modelDownloadAction:pressed {background: $signal_hover; border-color: $signal_hover;}
+QToolButton#modelDownloadAction:disabled {background: transparent; border-color: $line;}
 QToolButton#modelDownloadAction:focus, QPushButton#modelChoiceSelect:focus {
     border: 2px solid $focus;
 }
 QProgressBar#modelChoiceProgress {
-    background: $line; border: 0; border-radius: 0; min-height: 3px; max-height: 3px;
+    background: $line; border: 0; border-radius: 1px; min-height: 2px; max-height: 2px;
 }
-QProgressBar#modelChoiceProgress::chunk {background: $signal; border-radius: 0;}
+QProgressBar#modelChoiceProgress::chunk {background: $signal; border-radius: 1px;}
 """)
 
 
-def _action_icon(action, foreground, disabled):
+def _action_icon(action, foreground, disabled, active=None):
     icon = QIcon()
-    for mode, color in ((QIcon.Mode.Normal, foreground), (QIcon.Mode.Disabled, disabled)):
+    for mode, color in ((QIcon.Mode.Normal, foreground), (QIcon.Mode.Disabled, disabled),
+                        (QIcon.Mode.Active, active or foreground)):
         for scale in (1, 2):
             image = QPixmap(20 * scale, 20 * scale)
             image.setDevicePixelRatio(scale)
@@ -125,8 +128,9 @@ class _ModelRow(QFrame):
 
         self.action = QToolButton()
         self.action.setObjectName('modelDownloadAction')
-        self.action.setFixedSize(44, 44)
+        self.action.setFixedSize(36, 36)
         self.action.setIconSize(QSize(20, 20))
+        self.action.setAutoRaise(True)
         self.action.setCursor(Qt.CursorShape.PointingHandCursor)
         self.action.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.action.clicked.connect(lambda: popup.combo.downloadRequested.emit(key, self.command))
@@ -168,7 +172,7 @@ class _ModelRow(QFrame):
         icon_state = self.command, theme
         if icon_state != self.icon_state:
             colors = COLORS[theme]
-            self.action.setIcon(_action_icon(self.command, colors['brand'], colors['disabled_ink']))
+            self.action.setIcon(_action_icon(self.command, colors['brand'], colors['disabled_ink'], colors['signal_ink']))
             self.icon_state = icon_state
 
     def button(self):

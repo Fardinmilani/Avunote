@@ -123,7 +123,7 @@ _MORE = {
         'OpenRouter به‌موقع پاسخ نداد. اتصال اینترنت، VPN یا پراکسی را بررسی کنید و دوباره تلاش کنید.',
         'مرورگر باز نشد. پیوند ورود را کپی کنید و در مرورگر باز کنید.',
         'کپی پیوند ورود', 'پیوند ورود کپی شد. آن را در نوار نشانی مرورگر بچسبانید.',
-        'استفاده از کلید API…', 'کلید API سرویس OpenRouter را بچسبانید (با sk-or- شروع می‌شود):',
+        'استفاده از کلید API\u200e…', 'کلید API سرویس OpenRouter را بچسبانید (با sk-or- شروع می‌شود):',
         'این کلید API سرویس OpenRouter نیست. باید با sk-or- شروع شود.',
     ),
     'tr': (
@@ -441,7 +441,7 @@ class _ConnectDialog(QDialog):
         if locale in RTL_LANGUAGES:
             self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setWindowTitle(self.copy[0])
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(440)
         self.profile_id = None
         self.cancelled = Event()
         self.results = SimpleQueue()
@@ -450,12 +450,17 @@ class _ConnectDialog(QDialog):
         self.deadline = 0.0
         self.exchanging = False
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 24, 28, 20)
+        layout.setSpacing(10)
+        title = QLabel(self.copy[0])
+        title.setObjectName('dialogTitle')
+        layout.addWidget(title)
         description = QLabel(self.copy[1])
         description.setWordWrap(True)
         layout.addWidget(description)
+        layout.addSpacing(8)
         self.status = QLabel()
+        self.status.setObjectName('muted')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
@@ -463,21 +468,29 @@ class _ConnectDialog(QDialog):
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
+        layout.addSpacing(10)
         actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         actions.button(QDialogButtonBox.StandardButton.Cancel).setText(self.copy[5])
         actions.rejected.connect(self.reject)
         self.retry = actions.addButton(self.copy[4], QDialogButtonBox.ButtonRole.ActionRole)
+        self.retry.setObjectName('primary')
         self.retry.clicked.connect(self.start)
         self.retry.hide()
         self.copy_link = actions.addButton(self.more[4], QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_link.setObjectName('quiet')
         self.copy_link.clicked.connect(self.copy_sign_in_link)
         self.copy_link.hide()
         self.manual_key = actions.addButton(self.more[6], QDialogButtonBox.ButtonRole.ActionRole)
+        self.manual_key.setObjectName('quiet')
         self.manual_key.clicked.connect(self.use_api_key)
         layout.addWidget(actions)
         self.poll = QTimer(self)
         self.poll.timeout.connect(self.consume_result)
         QTimer.singleShot(0, self, self.start)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def start(self):
         if not self.isVisible():

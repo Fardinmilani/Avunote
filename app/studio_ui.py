@@ -974,7 +974,8 @@ class Studio(QMainWindow):
                 key = combo.itemData(index)
                 item = get_model(key)
                 ready = self.model_readiness.get(key, False)
-                state, _, _, percent = self.model_status(item, self.downloads.snapshot(key), ready)
+                snapshot = self.downloads.snapshot(key)
+                state, _, _, percent = self.model_status(item, snapshot, ready)
                 status = MODEL_STATES[state]
                 if state in DOWNLOAD_IN_PROGRESS | {'paused'}:
                     status += f'  ·  {percent:.0f}%'
@@ -992,6 +993,8 @@ class Studio(QMainWindow):
                     row.setText(text)
                 detail = tr(item['detail'])
                 translated_status = tr(status)
+                if state == 'error' and snapshot.get('error'):
+                    translated_status += '\n' + tr(str(snapshot['error']))
                 tooltip = detail + '\n' + translated_status
                 if row.toolTip() != tooltip:
                     row.setToolTip(tooltip)
@@ -1234,7 +1237,8 @@ class Studio(QMainWindow):
             status_label = widgets['status']
             if status_label.source_text != status:
                 status_label.setText(status)
-            tone = 'ready' if ready else 'info' if active else 'error' if state == 'error' else 'warning'
+            tone = ('ready' if ready else 'info' if active else 'error' if state == 'error'
+                    else 'idle' if state == 'idle' else 'warning')
             if status_label.property('tone') != tone:
                 status_label.setProperty('tone', tone)
                 status_label.style().unpolish(status_label)
