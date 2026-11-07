@@ -18,7 +18,8 @@ import requests
 
 OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 OPENROUTER_FREE_MODEL = 'openrouter/free'
-PROVIDERS = ('gemini', 'openai-compatible', 'ollama', 'openrouter')
+ANTHROPIC_VERSION = '2023-06-01'
+PROVIDERS = ('gemini', 'openai-compatible', 'ollama', 'openrouter', 'anthropic')
 MAX_CONTEXT_CHARS = 120_000
 MAX_MESSAGES = 80
 MAX_OUTPUT_TOKENS = 4096
@@ -31,7 +32,49 @@ DEFAULT_BASE_URLS = {
     'openai-compatible': 'https://api.openai.com/v1',
     'ollama': 'http://127.0.0.1:11434',
     'openrouter': OPENROUTER_BASE_URL,
+    'anthropic': 'https://api.anthropic.com',
 }
+CONNECTION_PRESETS = (
+    {'id': 'gemini', 'label': 'Google AI Studio / Gemini', 'provider': 'gemini',
+     'base_url': DEFAULT_BASE_URLS['gemini'], 'model': 'gemini-3.8-flash',
+     'docs': 'https://aistudio.google.com/apikey', 'key_prefix': 'AIza',
+     'hint': 'Create an API key in Google AI Studio (Gemini). This uses Google AI Studio, not Vertex AI.'},
+    {'id': 'openai', 'label': 'OpenAI', 'provider': 'openai-compatible',
+     'base_url': 'https://api.openai.com/v1', 'model': 'gpt-4o-mini',
+     'docs': 'https://platform.openai.com/api-keys', 'key_prefix': 'sk-'},
+    {'id': 'anthropic', 'label': 'Anthropic Claude', 'provider': 'anthropic',
+     'base_url': DEFAULT_BASE_URLS['anthropic'], 'model': 'claude-sonnet-4-5',
+     'docs': 'https://console.anthropic.com/settings/keys', 'key_prefix': 'sk-ant-'},
+    {'id': 'openrouter-key', 'label': 'OpenRouter (API key)', 'provider': 'openai-compatible',
+     'base_url': OPENROUTER_BASE_URL, 'model': OPENROUTER_FREE_MODEL,
+     'docs': 'https://openrouter.ai/keys', 'key_prefix': 'sk-or-',
+     'hint': 'Paste an OpenRouter key. Browser sign-in for free models is still available from Connect free AI.'},
+    {'id': 'groq', 'label': 'Groq', 'provider': 'openai-compatible',
+     'base_url': 'https://api.groq.com/openai/v1', 'model': 'llama-3.3-70b-versatile',
+     'docs': 'https://console.groq.com/keys', 'key_prefix': 'gsk_'},
+    {'id': 'mistral', 'label': 'Mistral AI', 'provider': 'openai-compatible',
+     'base_url': 'https://api.mistral.ai/v1', 'model': 'mistral-small-latest',
+     'docs': 'https://console.mistral.ai/api-keys'},
+    {'id': 'together', 'label': 'Together AI', 'provider': 'openai-compatible',
+     'base_url': 'https://api.together.xyz/v1', 'model': '',
+     'docs': 'https://api.together.xyz/settings/api-keys'},
+    {'id': 'deepseek', 'label': 'DeepSeek', 'provider': 'openai-compatible',
+     'base_url': 'https://api.deepseek.com/v1', 'model': 'deepseek-chat',
+     'docs': 'https://platform.deepseek.com/api_keys'},
+    {'id': 'fireworks', 'label': 'Fireworks AI', 'provider': 'openai-compatible',
+     'base_url': 'https://api.fireworks.ai/inference/v1', 'model': '',
+     'docs': 'https://fireworks.ai/account/api-keys'},
+    {'id': 'xai', 'label': 'xAI Grok', 'provider': 'openai-compatible',
+     'base_url': 'https://api.x.ai/v1', 'model': 'grok-3',
+     'docs': 'https://console.x.ai/'},
+    {'id': 'openai-compatible', 'label': 'OpenAI-compatible (custom)', 'provider': 'openai-compatible',
+     'base_url': 'https://api.openai.com/v1', 'model': '',
+     'hint': 'Any OpenAI-compatible server: base URL plus API key. Works with Groq, Mistral, Together, DeepSeek, Fireworks, xAI, and local LM Studio.'},
+    {'id': 'lmstudio', 'label': 'LM Studio (local)', 'provider': 'openai-compatible',
+     'base_url': 'http://127.0.0.1:1234/v1', 'model': ''},
+    {'id': 'ollama', 'label': 'Local Ollama', 'provider': 'ollama',
+     'base_url': DEFAULT_BASE_URLS['ollama'], 'model': ''},
+)
 
 
 class AIError(ValueError):
@@ -88,7 +131,7 @@ def validate_profile(profile):
         raise AIError('Invalid AI profile.')
     provider = profile.get('provider', '')
     if provider not in PROVIDERS:
-        raise AIError('Choose Gemini, an OpenAI-compatible API, or local Ollama.')
+        raise AIError('Choose Gemini, Claude, an OpenAI-compatible API, OpenRouter, or local Ollama.')
     base_url = validate_base_url(profile.get('base_url') or DEFAULT_BASE_URLS[provider])
     model = profile.get('model', '')
     if not isinstance(model, str):
@@ -143,6 +186,10 @@ def _endpoint(config):
         if not path:
             base += '/v1beta'
         return base + '/models/' + config['model'] + ':generateContent'
+    if config['provider'] == 'anthropic':
+        if path.endswith('/messages'):
+            return base
+        return base + ('/v1/messages' if not path else '/messages')
     if config['provider'] == 'ollama':
         if path.endswith('/api/chat'):
             return base
@@ -157,6 +204,10 @@ def _models_endpoint(config):
     path = urlsplit(base).path
     if config['provider'] == 'gemini':
         return base + ('' if path else '/v1beta') + '/models?pageSize=1000'
+    if config['provider'] == 'anthropic':
+        if path.endswith('/messages'):
+            base = base[:-len('/messages')]
+        return base + ('/v1/models' if not urlsplit(base).path else '/models')
     if config['provider'] == 'ollama':
         for suffix in ('/api/chat', '/api'):
             if path.endswith(suffix):
@@ -195,6 +246,47 @@ def _model_ids(config, data):
     return sorted(result[:MAX_LISTED_MODELS], key=lambda m: (m != OPENROUTER_FREE_MODEL, m.lower()))
 
 
+def match_preset(profile):
+    """Return the connection preset that best matches a saved profile."""
+    provider = profile.get('provider')
+    try:
+        base_url = validate_base_url(profile.get('base_url') or DEFAULT_BASE_URLS.get(provider, ''))
+    except AIError:
+        base_url = profile.get('base_url') or ''
+    exact = [preset for preset in CONNECTION_PRESETS
+             if preset['provider'] == provider and validate_base_url(preset['base_url']) == base_url]
+    if exact:
+        return exact[0]
+    if provider == 'openai-compatible':
+        return next(preset for preset in CONNECTION_PRESETS if preset['id'] == 'openai-compatible')
+    return next((preset for preset in CONNECTION_PRESETS if preset['provider'] == provider),
+                next(preset for preset in CONNECTION_PRESETS if preset['id'] == 'openai-compatible'))
+
+
+def key_prefix_error(preset, key):
+    prefix = preset.get('key_prefix') if preset else None
+    if not key or not prefix or key.startswith(prefix):
+        return ''
+    return f'This {preset["label"]} key usually starts with {prefix}.'
+
+
+def _auth_headers(config, key, json_body=False):
+    headers = {'Accept': 'application/json'}
+    if json_body:
+        headers['Content-Type'] = 'application/json'
+    if not key:
+        return headers
+    provider = config['provider']
+    if provider == 'gemini':
+        headers['x-goog-api-key'] = key
+    elif provider == 'anthropic':
+        headers['x-api-key'] = key
+        headers['anthropic-version'] = ANTHROPIC_VERSION
+    else:
+        headers['Authorization'] = 'Bearer ' + key
+    return headers
+
+
 def list_models(profile, cancel_event=None):
     """Return model IDs from the provider's models endpoint after an explicit refresh.
 
@@ -205,9 +297,7 @@ def list_models(profile, cancel_event=None):
     key = profile.get('key', '') or ''
     if not isinstance(key, str) or len(key) > 8192 or any(ord(c) < 32 or ord(c) == 127 for c in key):
         raise AIError('The API key contains invalid characters.')
-    headers = {'Accept': 'application/json'}
-    if key:
-        headers['x-goog-api-key' if config['provider'] == 'gemini' else 'Authorization'] = key if config['provider'] == 'gemini' else 'Bearer '+key
+    headers = _auth_headers(config, key)
     with requests.Session() as session:
         if config['is_local']:
             session.trust_env = False
@@ -252,6 +342,14 @@ def _payload(config, messages):
         if instructions:
             body['systemInstruction'] = {'parts': [{'text': '\n\n'.join(instructions)}]}
         return body
+    if config['provider'] == 'anthropic':
+        body = {'model': model, 'max_tokens': tokens, 'messages': [
+            {'role': m['role'], 'content': m['content']} for m in messages if m['role'] != 'system'
+        ]}
+        instructions = [m['content'] for m in messages if m['role'] == 'system']
+        if instructions:
+            body['system'] = '\n\n'.join(instructions)
+        return body
     if config['provider'] == 'ollama':
         return {'model': model, 'messages': messages, 'stream': False,
                 'options': {'num_predict': tokens}}
@@ -272,6 +370,10 @@ def _reply(config, data):
                 raise AIError('Google blocked or stopped the response. Check its content policies or try a different prompt.')
             parts = candidate['content']['parts']
             result = ''.join(p['text'] for p in parts if isinstance(p, dict) and isinstance(p.get('text'), str) and not p.get('thought'))
+        elif config['provider'] == 'anthropic':
+            parts = data.get('content', [])
+            result = ''.join(p['text'] for p in parts if isinstance(p, dict)
+                             and p.get('type') == 'text' and isinstance(p.get('text'), str))
         elif config['provider'] == 'ollama':
             result = data['message']['content']
         else:
@@ -315,11 +417,11 @@ def chat(profile, messages, cancel_event=None, on_delta=None):
         raise AIError('The API key contains invalid characters.')
     if config['provider'] == 'gemini' and not key:
         raise AIError('Add your Google AI Studio API key to this profile.')
+    if config['provider'] == 'anthropic' and not key:
+        raise AIError('Add your Anthropic API key to this profile.')
     if config['provider'] == 'openrouter' and not key:
         raise AIError('Reconnect your OpenRouter account.')
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
-    if key:
-        headers['x-goog-api-key' if config['provider'] == 'gemini' else 'Authorization'] = key if config['provider'] == 'gemini' else 'Bearer '+key
+    headers = _auth_headers(config, key, json_body=True)
     payload = _payload(config, history)
     endpoint = _endpoint(config)
     with requests.Session() as session:

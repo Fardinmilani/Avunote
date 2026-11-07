@@ -173,6 +173,37 @@ class ClientTests(unittest.TestCase):
         self.client(Response({'candidates':[{'content':{'parts':[{'text':'internal','thought':True},{'text':'answer'}]}}]}))
         self.assertEqual(ai.chat(profile(), [{'role':'user','content':'text'}]), 'answer')
 
+    def test_anthropic_chat_and_model_list(self):
+        session = self.client(Response({'content': [{'type': 'text', 'text': 'claude answer'}]}))
+        p = profile('anthropic', model='claude-sonnet-4-5')
+        self.assertEqual(ai.chat(p, [{'role':'system','content':'Be brief.'}, {'role':'user','content':'Hi'}]), 'claude answer')
+        url, request = session.calls[0]
+        self.assertEqual(url, 'https://api.anthropic.com/v1/messages')
+        self.assertEqual(request['headers']['x-api-key'], 'secret-test-key-12345')
+        self.assertEqual(request['headers']['anthropic-version'], ai.ANTHROPIC_VERSION)
+        self.assertNotIn('Authorization', request['headers'])
+        self.assertEqual(request['json']['system'], 'Be brief.')
+        self.assertEqual(request['json']['messages'], [{'role':'user','content':'Hi'}])
+        session = self.client(Response({'data': [{'id': 'claude-sonnet-4-5'}, {'id': 'claude-haiku-4-5'}]}))
+        self.assertEqual(ai.list_models(p), ['claude-haiku-4-5', 'claude-sonnet-4-5'])
+        self.assertEqual(session.calls[0][0], 'https://api.anthropic.com/v1/models')
+        self.assertEqual(session.calls[0][1]['headers']['x-api-key'], 'secret-test-key-12345')
+
+    def test_openai_compatible_presets_and_gemini_remain_header_only(self):
+        groq = next(item for item in ai.CONNECTION_PRESETS if item['id'] == 'groq')
+        session = self.client(Response({'choices':[{'message':{'content':'ok'}}]}))
+        p = profile('openai-compatible', base_url=groq['base_url'], model='llama-3.3-70b-versatile')
+        self.assertEqual(ai.chat(p, [{'role':'user','content':'hi'}]), 'ok')
+        self.assertEqual(session.calls[0][0], 'https://api.groq.com/openai/v1/chat/completions')
+        self.assertEqual(session.calls[0][1]['headers']['Authorization'], 'Bearer secret-test-key-12345')
+        self.assertEqual(ai.match_preset({'provider':'gemini', 'base_url': ai.DEFAULT_BASE_URLS['gemini']})['id'], 'gemini')
+        self.assertEqual(ai.match_preset({'provider':'openai-compatible', 'base_url': ai.OPENROUTER_BASE_URL})['id'], 'openrouter-key')
+        self.assertEqual(ai.key_prefix_error(next(item for item in ai.CONNECTION_PRESETS if item['id']=='gemini'), 'sk-wrong'),
+                         "This Google AI Studio / Gemini key usually starts with AIza.")
+        self.assertFalse(ai.key_prefix_error(next(item for item in ai.CONNECTION_PRESETS if item['id']=='gemini'), 'AIzaSyTest'))
+        with self.assertRaises(ai.AIError):
+            ai.validate_profile({'provider':'openrouter', 'base_url': ai.OPENROUTER_BASE_URL, 'model':'openai/gpt-4o'})
+
     def test_response_size_and_bad_json(self):
         self.client(Response(raw=b'x'*(ai.MAX_REPLY_BYTES+1)))
         with self.assertRaisesRegex(ai.AIError,'size limit'): ai.chat(profile(), [{'role':'user','content':'text'}])

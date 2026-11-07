@@ -56,15 +56,14 @@ class AIPanelTests(unittest.TestCase):
         self.page=panel.AIPage(lambda:self.raw)
         self.addCleanup(self.page.close)
 
-    def test_no_auto_send_and_explicit_cloud_consent(self):
+    def test_no_auto_send_and_chat_without_cloud_checkbox(self):
         self.page.set_transcript(self.raw)
         self.page.retranslate_ui();self.page.refresh_profiles()
         self.assertEqual(FakeWorker.instances,[])
+        self.assertFalse(hasattr(self.page, 'consent'))
+        self.assertFalse(any('cloud chat' in (widget.text() or '').lower() for widget in self.page.findChildren(panel.QCheckBox)))
         self.page.composer.setPlainText('Summarize')
         self.page.send_chat()
-        self.assertEqual(FakeWorker.instances,[])
-        self.assertEqual(self.page.composer.toPlainText(),'Summarize')
-        self.page.consent.setChecked(True);self.page.send_chat()
         self.assertEqual(len(FakeWorker.instances),1)
         self.assertTrue(any(self.raw in m['content'] for m in FakeWorker.instances[-1].messages))
         FakeWorker.instances[-1].complete('Summary')
@@ -82,7 +81,7 @@ class AIPanelTests(unittest.TestCase):
         self.page.ai_model.setEditText('not a model');self.page.apply_model()
         self.assertEqual(self.page.ai_model.currentText(), 'gemini-2.5-pro')
         self.assertEqual(ai_profiles.get_profile(self.profile_id)['model'], 'gemini-2.5-pro')
-        self.page.consent.setChecked(True);self.page.ai_model.setEditText('gemini-2.5-flash')
+        self.page.ai_model.setEditText('gemini-2.5-flash')
         self.page.composer.setPlainText('Summarize');self.page.send_chat()
         self.assertEqual(FakeWorker.instances[-1].profile['model'], 'gemini-2.5-flash')
         self.assertFalse(self.page.ai_model.isEnabled());self.assertFalse(self.page.refresh_models.isEnabled())
@@ -120,12 +119,10 @@ class AIPanelTests(unittest.TestCase):
         self.assertEqual(self.page.ai_model.lineEdit().placeholderText(),'Connect an AI to choose a model')
         self.page.refresh_model_list();self.page.apply_model()
 
-    def test_grammar_mode_reviews_voice_text_without_bypassing_consent(self):
+    def test_grammar_mode_reviews_voice_text_without_auto_send(self):
         self.page.chat_mode.setCurrentIndex(self.page.chat_mode.findData('grammar'))
         self.page.append_voice_transcript('I has a book.')
-        self.page.send_chat()
         self.assertEqual(FakeWorker.instances, [])
-        self.page.consent.setChecked(True)
         self.page.send_chat()
         request = FakeWorker.instances[-1]
         self.assertIn('Needs correction', request.messages[0]['content'])
@@ -136,7 +133,6 @@ class AIPanelTests(unittest.TestCase):
         self.assertTrue(self.page.chat_mode.isEnabled())
 
     def test_composer_keyboard_respects_line_breaks_and_ime(self):
-        self.page.consent.setChecked(True)
         self.page.composer.setPlainText('First line')
         self.page.composer.moveCursor(self.page.composer.textCursor().MoveOperation.End)
         QTest.keyClick(self.page.composer, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
@@ -174,7 +170,7 @@ class AIPanelTests(unittest.TestCase):
         try:
             self.assertEqual(restored.chat_mode.currentData(), 'practice')
             self.assertEqual(restored.composer.toPlainText(), draft)
-            self.assertFalse(restored.consent.isChecked())
+            self.assertFalse(hasattr(restored, 'consent'))
         finally:
             restored.close()
         path = self.folder / 'ai-chats' / (self.page.chat_id + '.json')
@@ -189,7 +185,7 @@ class AIPanelTests(unittest.TestCase):
             legacy.close()
 
     def test_failed_question_restored_without_polluting_followup_history(self):
-        self.page.consent.setChecked(True);self.page.composer.setPlainText('Failed question');self.page.send_chat()
+        self.page.composer.setPlainText('Failed question');self.page.send_chat()
         FakeWorker.instances[-1].fail()
         self.assertEqual(self.page.messages,[])
         self.assertEqual(self.page.composer.toPlainText(),'Failed question')
@@ -199,7 +195,7 @@ class AIPanelTests(unittest.TestCase):
         FakeWorker.instances[-1].complete('Successful answer')
 
     def test_cancellation_restores_draft_and_keeps_reference_stable(self):
-        self.page.set_transcript(self.raw);self.page.consent.setChecked(True)
+        self.page.set_transcript(self.raw)
         self.page.composer.setPlainText('Question');self.page.send_chat()
         worker=FakeWorker.instances[-1]
         self.assertFalse(self.page.set_transcript('replacement'))
@@ -209,7 +205,7 @@ class AIPanelTests(unittest.TestCase):
         self.assertEqual(self.page.composer.toPlainText(),'Question')
 
     def test_followup_retains_context_but_reference_change_starts_new_chat(self):
-        self.page.set_transcript(self.raw);self.page.consent.setChecked(True)
+        self.page.set_transcript(self.raw)
         self.page.composer.setPlainText('First');self.page.send_chat();FakeWorker.instances[-1].complete('First reply')
         self.page.composer.setPlainText('Followup');self.page.send_chat()
         payload=FakeWorker.instances[-1].messages
@@ -217,41 +213,40 @@ class AIPanelTests(unittest.TestCase):
         FakeWorker.instances[-1].complete('Second reply');old_id=self.page.chat_id
         self.assertTrue(self.page.set_transcript('New transcript'))
         self.assertNotEqual(self.page.chat_id,old_id);self.assertEqual(self.page.messages,[])
-        self.assertFalse(self.page.consent.isChecked())
 
-    def test_saved_chat_deleted_profile_cannot_reuse_another_provider_consent(self):
-        self.page.set_transcript(self.raw);self.page.consent.setChecked(True)
+    def test_saved_chat_deleted_profile_cannot_reuse_another_provider(self):
+        self.page.set_transcript(self.raw)
         self.page.composer.setPlainText('Question');self.page.send_chat();FakeWorker.instances[-1].complete('Answer')
         saved=self.page.chat_id+'.json'
         contents=(self.folder/'ai-chats'/saved).read_text(encoding='utf-8')
         self.assertNotIn('unit-secret-key',contents)
         ai_profiles.delete_profile(self.profile_id)
         other=ai_profiles.save_profile({'name':'Other cloud','provider':'openai-compatible','model':'other','key':'other-dummy-key'})
-        self.page.refresh_profiles(other);self.page.consent.setChecked(True)
+        self.page.refresh_profiles(other)
         self.page.load_chat(self.page.saved_chats.findData(saved))
-        self.assertIsNone(self.page.profiles.currentData());self.assertFalse(self.page.consent.isChecked())
+        self.assertIsNone(self.page.profiles.currentData())
         self.assertEqual(self.page.reference,self.raw)
         self.assertEqual(self.page.messages[-1]['content'],'Answer')
 
-    def test_html_is_escaped_and_locale_changes_do_not_send_or_reset_consent(self):
+    def test_html_is_escaped_and_locale_changes_do_not_send(self):
         attack='<img src="https://evil.example/pixel"><script>alert(1)</script>'
         self.page.messages=[{'role':'assistant','content':attack}];self.page.render()
         self.assertNotIn('<img ',self.page.conversation.toHtml())
         self.assertIn(attack,self.page.conversation.toPlainText())
-        self.page.consent.setChecked(True)
         for code in ['fa','tr','ar','az','en']:
             ui_i18n.set_language(code);self.page.retranslate_ui()
-            self.assertTrue(self.page.consent.isChecked())
             self.assertEqual(FakeWorker.instances,[])
             dialog=panel.ProfileDialog(parent=self.page)
             form=dialog.findChild(QFormLayout)
             self.assertEqual(form.labelForField(dialog.name).text(),panel.t('Name'))
             self.assertEqual(dialog.clear_key.text(),panel.t('Forget existing key'))
+            self.assertGreaterEqual(dialog.provider.count(), 8)
+            self.assertEqual(dialog.provider.itemData(0), 'gemini')
+            self.assertIn('anthropic', [dialog.provider.itemData(i) for i in range(dialog.provider.count())])
             dialog.close()
 
     def test_repeated_voice_inputs_continue_the_same_chat_without_automatic_sending(self):
         self.page.set_transcript(self.raw)
-        self.page.consent.setChecked(True)
         self.page.composer.setPlainText('Typed introduction')
         chat_id=self.page.chat_id
         self.page.set_voice_state('recording')
@@ -261,7 +256,6 @@ class AIPanelTests(unittest.TestCase):
         self.assertEqual(self.page.composer.toPlainText(),'Typed introduction\n\nFirst voice question')
         self.assertEqual(self.page.chat_id,chat_id)
         self.assertEqual(self.page.reference,self.raw)
-        self.assertTrue(self.page.consent.isChecked())
         self.page.send_chat();FakeWorker.instances[-1].complete('First answer')
         self.page.set_voice_state('transcribing')
         self.page.append_voice_transcript('Follow-up voice','voice-two.wav')
@@ -324,7 +318,6 @@ class AIPanelTests(unittest.TestCase):
 
     def test_voice_processing_blocks_sending_and_conversation_switching(self):
         self.page.composer.setPlainText('Unsent question')
-        self.page.consent.setChecked(True)
         chat_id=self.page.chat_id
         self.page.set_voice_state('transcribing')
         self.page.send_chat();self.page.new_chat()
@@ -351,9 +344,8 @@ class AIPanelTests(unittest.TestCase):
         self.page.load_chat(self.page.saved_chats.findData(second+'.json'))
         self.assertEqual(self.page.composer.toPlainText(),'Unsent second chat')
 
-    def test_shutdown_persists_latest_draft_and_restart_restores_it_without_consent(self):
+    def test_shutdown_persists_latest_draft_and_restart_restores_it(self):
         self.page.set_transcript(self.raw)
-        self.page.consent.setChecked(True)
         self.page.composer.setPlainText('Latest draft without waiting for autosave')
         saved_id=self.page.chat_id
         self.assertTrue(self.page.shutdown())
@@ -362,12 +354,11 @@ class AIPanelTests(unittest.TestCase):
             self.assertEqual(other.chat_id,saved_id)
             self.assertEqual(other.composer.toPlainText(),'Latest draft without waiting for autosave')
             self.assertEqual(other.reference,self.raw)
-            self.assertFalse(other.consent.isChecked())
+            self.assertFalse(hasattr(other, 'consent'))
             self.assertEqual(FakeWorker.instances,[])
         finally:other.close()
 
     def test_autosaved_pending_question_restores_as_draft_after_interruption(self):
-        self.page.consent.setChecked(True)
         self.page.composer.setPlainText('Question in flight')
         self.page.send_chat()
         other=panel.AIPage(lambda:self.raw)
@@ -375,7 +366,7 @@ class AIPanelTests(unittest.TestCase):
             self.assertEqual(other.composer.toPlainText(),'Question in flight')
             self.assertEqual(other.messages,[])
             self.assertEqual(other.pending_question,'')
-            self.assertFalse(other.consent.isChecked())
+            self.assertFalse(hasattr(other, 'consent'))
         finally:other.close()
         FakeWorker.instances[-1].fail()
 
@@ -419,6 +410,34 @@ class AIPanelTests(unittest.TestCase):
         self.assertIn('Answer',text)
         self.assertIn('Unsent draft',text)
         self.assertNotIn('unit-secret-key-not-real',text)
+
+    def test_speech_language_and_model_pickers_are_on_chat(self):
+        self.assertGreater(self.page.speech_language.count(), 1)
+        self.assertEqual(self.page.speech_language.itemData(0), 'auto')
+        self.assertGreaterEqual(self.page.speech_language.findData('fa'), 0)
+        self.page.set_speech_models([('Omnilingual ASR 300M  ·  365 MB', 'omnilingual-ctc-300m', True),
+                                     ('Missing', 'whisper-base-full', False)], 'omnilingual-ctc-300m')
+        self.assertEqual(self.page.speech_model_key(), 'omnilingual-ctc-300m')
+        self.assertEqual(self.page.speech_language_code(), self.page.speech_language.currentData())
+
+    def test_profile_dialog_presets_and_key_prefix(self):
+        dialog = panel.ProfileDialog(parent=self.page)
+        ids = [dialog.provider.itemData(i) for i in range(dialog.provider.count())]
+        self.assertEqual(ids[0], 'gemini')
+        self.assertIn('anthropic', ids)
+        self.assertIn('openrouter-key', ids)
+        self.assertIn('openai-compatible', ids)
+        self.assertIn('ollama', ids)
+        dialog.provider.setCurrentIndex(dialog.provider.findData('anthropic'))
+        self.assertEqual(dialog.base.text(), 'https://api.anthropic.com')
+        dialog.key.setText('sk-not-anthropic')
+        dialog.name.setText('Claude')
+        dialog.save()
+        self.assertIn('sk-ant-', dialog.error.text())
+        dialog.key.setText('sk-ant-unit-test-key-not-real')
+        dialog.save()
+        self.assertEqual(ai_profiles.get_profile(dialog.saved_id)['provider'], 'anthropic')
+        dialog.close()
 
 
 if __name__=='__main__':unittest.main()

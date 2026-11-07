@@ -139,8 +139,8 @@ class ChatVoiceIntegrationTests(unittest.TestCase):
              patch.object(studio_ui.subprocess, 'Popen', return_value=process) as start:
             self.page.attach_audio.click()
         command = start.call_args.args[0]
-        expected = {'--worker':str(self.audio.resolve()), '--model':self.window.model.currentData(),
-                    '--language':self.window.language.currentData(), '--beams':str(self.window.mode.currentData()),
+        expected = {'--worker':str(self.audio.resolve()), '--model':self.page.speech_model_key(),
+                    '--language':self.page.speech_language_code(), '--beams':str(self.window.mode.currentData()),
                     '--device':'cuda', '--chunk-seconds':'15', '--output':str(self.window.ai_output)}
         for flag, value in expected.items():self.assertEqual(command[command.index(flag) + 1], value)
         self.assertEqual(self.page.voice_state, 'transcribing')
@@ -254,6 +254,25 @@ class ChatVoiceIntegrationTests(unittest.TestCase):
         with patch.object(studio_ui.subprocess, 'Popen') as start:recorder.complete()
         start.assert_not_called()
         self.assertEqual(self.page.composer.toPlainText(), 'Existing typed draft')
+
+    def test_chat_speech_pickers_are_independent_of_studio(self):
+        studio_language = self.window.language.currentData()
+        studio_model = self.window.model.currentData()
+        self.page.speech_language.setCurrentIndex(self.page.speech_language.findData('en'))
+        self.assertEqual(self.window.language.currentData(), studio_language)
+        chat_model = self.page.speech_model_key()
+        self.assertTrue(chat_model)
+        process = self.fake_process()
+        with patch.object(studio_ui.QFileDialog, 'getOpenFileName', return_value=(str(self.audio), 'Audio')), \
+             patch.object(studio_ui.subprocess, 'Popen', return_value=process) as start:
+            self.page.attach_audio.click()
+        command = start.call_args.args[0]
+        self.assertEqual(command[command.index('--language') + 1], 'en')
+        self.assertEqual(command[command.index('--model') + 1], chat_model)
+        self.assertEqual(self.window.model.currentData(), studio_model)
+        self.window.language.setCurrentIndex(self.window.language.findData('tr'))
+        self.assertEqual(self.page.speech_language_code(), 'en')
+        self.finish_transcription(process)
 
     def test_drop_on_chat_routes_to_chat_transcriber(self):
         event = MagicMock()

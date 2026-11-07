@@ -13,11 +13,12 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
     QComboBox, QPlainTextEdit, QTextBrowser, QCheckBox, QDialog, QDialogButtonBox,
     QFormLayout, QLineEdit, QMessageBox, QFrame, QListWidget, QListWidgetItem,
     QSplitter, QFileDialog, QSizePolicy, QMenu, QStackedWidget)
-from model_catalog import data_root
-from ui_i18n import RTL_LANGUAGES, current_language, tr
+from model_catalog import LANGUAGES, data_root
 from ai_profiles import (list_profiles, save_profile, get_profile, delete_profile, persistent_keys_available,
                          set_profile_model)
-from ai_clients import chat, is_local_url, list_models, AICancelled
+from ai_clients import (CONNECTION_PRESETS, chat, is_local_url, key_prefix_error, list_models,
+                        match_preset, AICancelled)
+from ui_i18n import RTL_LANGUAGES, current_language, language_title, tr
 from atomic_files import atomic_write_text, read_text_shared
 from studio_theme import COLORS, ChevronComboBox, font_roles
 from studio_icons import icon
@@ -50,7 +51,6 @@ TEXT = {
  'Ask anything': ('هرچه می‌خواهی بپرس','Bir şey sor','اسأل أي شيء','İstədiyinizi soruşun'),
  'Connect free AI': ('اتصال به هوش مصنوعی رایگان','Ücretsiz yapay zekâya bağlan','اتصل بالذكاء الاصطناعي المجاني','Pulsuz süni intellektə qoşul'),
  'Conversation actions': ('گزینه‌های گفت‌وگو','Sohbet seçenekleri','خيارات المحادثة','Söhbət seçimləri'),
- 'Allow cloud chat': ('اجازهٔ گفت‌وگوی ابری','Bulut sohbetine izin ver','السماح بالمحادثة السحابية','Bulud söhbətinə icazə ver'),
  'OpenRouter free models have usage limits. Your text is sent to OpenRouter and the selected provider.': ('مدل‌های رایگان OpenRouter سهمیه دارند. متن به OpenRouter و سرویس انتخاب‌شده ارسال می‌شود.','Ücretsiz OpenRouter modellerinin kullanım sınırları vardır. Metin OpenRouter’a ve seçilen sağlayıcıya gönderilir.','لنماذج OpenRouter المجانية حدود استخدام. يُرسل نصك إلى OpenRouter والمزوّد المختار.','Pulsuz OpenRouter modellərində istifadə həddi var. Mətn OpenRouter və seçilmiş provayderə göndərilir.'),
  'Chat mode': ('حالت گفت‌وگو','Sohbet modu','وضع المحادثة','Söhbət rejimi'),
  'Chat': ('گفت‌وگو','Sohbet','محادثة','Söhbət'),
@@ -81,7 +81,6 @@ TEXT = {
  'Waiting for reply…': ('در انتظار پاسخ…','Yanıt bekleniyor…','بانتظار الرد…','Cavab gözlənilir…'),
  'Reply saved locally.': ('پاسخ به‌صورت محلی ذخیره شد.','Yanıt yerel kaydedildi.','حُفظ الرد محليًا.','Cavab lokal saxlandı.'),
  'Choose or add a connection first.': ('ابتدا یک اتصال انتخاب یا اضافه کنید.','Önce bağlantı seçin veya ekleyin.','اختر اتصالًا أو أضفه أولًا.','Əvvəl bağlantı seçin və ya əlavə edin.'),
- 'Confirm cloud sending before pressing Send.': ('پیش از ارسال، اجازه ارسال ابری را فعال کنید.','Göndermeden önce bulut iznini onaylayın.','أكد الإرسال السحابي أولًا.','Əvvəl buluda göndərməni təsdiqləyin.'),
  'Local endpoint: use an installed local model. No AI model is downloaded by Avunote.': ('اتصال محلی: از مدل نصب‌شده محلی استفاده کنید؛ Avunote مدل AI دانلود نمی‌کند.','Yerel uç nokta: kurulu yerel model kullanın. Avunote AI modeli indirmez.','نقطة محلية: استخدم نموذجًا محليًا مثبتًا. لا ينزّل Avunote نموذج AI.','Lokal bağlantı: quraşdırılmış lokal model istifadə edin. Avunote AI modeli endirmir.'),
  'Google cloud: unpaid requests and replies may be used to improve Google products and reviewed by humans. Free quotas vary.': ('ابر گوگل: درخواست‌ها و پاسخ‌های رایگان ممکن است برای بهبود محصولات گوگل و بازبینی انسانی استفاده شوند؛ سهمیه‌ها متغیرند.','Google bulutu: ücretsiz istek/yanıtlar ürün geliştirme ve insan incelemesinde kullanılabilir. Kotalar değişir.','سحابة Google: قد تُستخدم الطلبات والردود المجانية لتحسين المنتجات ومراجعتها بشريًا. الحصص تختلف.','Google buludu: pulsuz sorğu/cavablar məhsulların təkmilləşdirilməsi və insan yoxlaması üçün istifadə oluna bilər. Kvotalar dəyişir.'),
  'Cloud endpoint: selected text and conversation leave this device when you press Send. Provider terms and charges apply.': ('سرویس ابری: با ارسال، متن انتخابی و گفت‌وگو از دستگاه خارج می‌شود؛ شرایط و هزینه سرویس اعمال می‌شود.','Bulut: Gönder ile seçili metin/sohbet cihazdan çıkar. Sağlayıcı koşul ve ücretleri geçerlidir.','سحابة: يغادر النص والمحادثة الجهاز عند الإرسال. تنطبق شروط ورسوم المزود.','Bulud: Göndər ilə mətn və söhbət cihazdan çıxır. Provayderin şərtləri və ödənişləri tətbiq olunur.'),
@@ -92,6 +91,20 @@ TEXT = {
  'API key': ('کلید API','API anahtarı','مفتاح API','API açarı'),
  'Local Ollama': ('Ollama محلی','Yerel Ollama','Ollama محلي','Lokal Ollama'),
  'OpenAI-compatible / LM Studio': ('سازگار با OpenAI / LM Studio','OpenAI uyumlu / LM Studio','متوافق مع OpenAI / LM Studio','OpenAI uyğun / LM Studio'),
+ 'OpenAI-compatible (custom)': ('سازگار با OpenAI (دلخواه)','OpenAI uyumlu (özel)','متوافق مع OpenAI (مخصص)','OpenAI uyğun (fərdi)'),
+ 'OpenRouter (API key)': ('OpenRouter (کلید API)','OpenRouter (API anahtarı)','OpenRouter (مفتاح API)','OpenRouter (API açarı)'),
+ 'LM Studio (local)': ('LM Studio محلی','Yerel LM Studio','LM Studio محلي','Lokal LM Studio'),
+ 'Provider docs: {url}': ('راهنمای سرویس: {url}','Sağlayıcı belgesi: {url}','وثائق المزود: {url}','Provayder sənədi: {url}'),
+ 'Create an API key in Google AI Studio (Gemini). This uses Google AI Studio, not Vertex AI.': ('کلید را در Google AI Studio (Gemini) بسازید؛ این اتصال Vertex AI نیست.','Anahtarı Google AI Studio’da (Gemini) oluşturun; bu Vertex AI değildir.','أنشئ المفتاح في Google AI Studio (Gemini)، وليس Vertex AI.','Açarı Google AI Studio-da (Gemini) yaradın; bu Vertex AI deyil.'),
+ 'Paste an OpenRouter key. Browser sign-in for free models is still available from Connect free AI.': ('کلید OpenRouter را بچسبانید. ورود رایگان مرورگر همچنان از اتصال به هوش مصنوعی رایگان در دسترس است.','OpenRouter anahtarını yapıştırın. Ücretsiz tarayıcı girişi hâlâ Ücretsiz yapay zekâya bağlan ile kullanılabilir.','الصق مفتاح OpenRouter. تسجيل الدخول المجاني من المتصفح ما زال متاحًا من اتصل بالذكاء الاصطناعي المجاني.','OpenRouter açarını yapışdırın. Pulsuz brauzer girişi hələ Pulsuz süni intellektə qoşul ilə əlçatandır.'),
+ 'Any OpenAI-compatible server: base URL plus API key. Works with Groq, Mistral, Together, DeepSeek, Fireworks, xAI, and local LM Studio.': ('هر سرور سازگار با OpenAI: نشانی پایه و کلید. Groq، Mistral، Together، DeepSeek، Fireworks، xAI و LM Studio محلی.','OpenAI uyumlu sunucu: temel adres ve anahtar. Groq, Mistral, Together, DeepSeek, Fireworks, xAI ve yerel LM Studio.','أي خادم متوافق مع OpenAI: عنوان أساسي ومفتاح. Groq وMistral وTogether وDeepSeek وFireworks وxAI وLM Studio المحلي.','OpenAI uyğun server: əsas ünvan və açar. Groq, Mistral, Together, DeepSeek, Fireworks, xAI və lokal LM Studio.'),
+ 'This {provider} key usually starts with {prefix}.': ('کلید {provider} معمولاً با {prefix} شروع می‌شود.','{provider} anahtarı genellikle {prefix} ile başlar.','يبدأ مفتاح {provider} عادةً بـ {prefix}.','{provider} açarı adətən {prefix} ilə başlayır.'),
+ 'Add your Anthropic API key to this profile.': ('کلید Anthropic را به این اتصال اضافه کنید.','Bu bağlantıya Anthropic API anahtarını ekleyin.','أضف مفتاح Anthropic إلى هذا الاتصال.','Bu bağlantıya Anthropic API açarını əlavə edin.'),
+ 'Choose Gemini, Claude, an OpenAI-compatible API, OpenRouter, or local Ollama.': ('Gemini، Claude، API سازگار با OpenAI، OpenRouter یا Ollama محلی را انتخاب کنید.','Gemini, Claude, OpenAI uyumlu API, OpenRouter veya yerel Ollama seçin.','اختر Gemini أو Claude أو واجهة متوافقة مع OpenAI أو OpenRouter أو Ollama المحلي.','Gemini, Claude, OpenAI uyğun API, OpenRouter və ya lokal Ollama seçin.'),
+ 'Auto-detect': ('تشخیص خودکار زبان','Otomatik dil algılama','اكتشاف اللغة تلقائيًا','Dili avtomatik tanı'),
+ 'Speech model': ('مدل تبدیل گفتار','Konuşma modeli','نموذج التفريغ','Nitq modeli'),
+ 'Chat voice uses this language and local speech model.': ('ویس گفت‌وگو با این زبان و مدل محلی تبدیل می‌شود.','Sohbet sesi bu dil ve yerel modelle yazıya dökülür.','يُفرَّغ صوت المحادثة بهذه اللغة والنموذج المحلي.','Söhbət səsi bu dil və lokal modellə mətnə çevrilir.'),
+ 'Language is detected automatically by this speech model.': ('این مدل زبان گفتار را خودکار تشخیص می‌دهد.','Bu model konuşma dilini otomatik algılar.','يكتشف هذا النموذج لغة الكلام تلقائيًا.','Bu model nitq dilini avtomatik tanıyır.'),
  'Leave blank to keep the key for an unchanged connection': ('برای حفظ کلید اتصال بدون تغییر، خالی بگذارید','Değişmeyen bağlantının anahtarını korumak için boş bırakın','اتركه فارغًا للاحتفاظ بمفتاح الاتصال دون تغيير','Dəyişməyən bağlantının açarını saxlamaq üçün boş buraxın'),
  'Remember key securely on this Windows account (DPAPI)': ('ذخیره امن کلید در همین حساب ویندوز (DPAPI)','Anahtarı bu Windows hesabında güvenle sakla (DPAPI)','حفظ المفتاح بأمان في حساب Windows هذا (DPAPI)','Açarı bu Windows hesabında təhlükəsiz saxla (DPAPI)'),
  'Forget existing key': ('حذف کلید قبلی','Mevcut anahtarı unut','نسيان المفتاح الحالي','Mövcud açarı unut'),
@@ -212,17 +225,24 @@ class ModelListWorker(QThread):
         finally:self.profile.clear()
 
 
+def preset_label(preset):
+    return t(preset['label']) if preset['label'] in TEXT else preset['label']
+
+
 class ProfileDialog(QDialog):
     def __init__(self, profile=None, parent=None):
-        super().__init__(parent);self.existing=profile or {};self.setWindowTitle(t('Edit connection' if self.existing else 'Add connection'));self.resize(560,430)
+        super().__init__(parent);self.existing=profile or {};self.setWindowTitle(t('Edit connection' if self.existing else 'Add connection'));self.resize(580,500)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if current_language() in {'fa','ar'} else Qt.LayoutDirection.LeftToRight)
         layout=QVBoxLayout(self);form=QFormLayout()
         title=QLabel(self.windowTitle());title.setObjectName('dialogTitle');layout.addWidget(title);layout.addSpacing(6)
         layout.addLayout(form)
         self.name=QLineEdit(self.existing.get('name',''))
-        self.provider=ChevronComboBox();self.provider.addItem('Google AI Studio / Gemini','gemini');self.provider.addItem(t('OpenAI-compatible / LM Studio'),'openai-compatible');self.provider.addItem(t('Local Ollama'),'ollama')
-        self.base=QLineEdit(self.existing.get('base_url','https://generativelanguage.googleapis.com/v1beta'))
-        self.model=QLineEdit(self.existing.get('model','gemini-3.8-flash'))
+        self.provider=ChevronComboBox()
+        for preset in CONNECTION_PRESETS:
+            self.provider.addItem(preset_label(preset), preset['id'])
+        selected = match_preset(self.existing) if self.existing.get('provider') else CONNECTION_PRESETS[0]
+        self.base=QLineEdit(self.existing.get('base_url', selected['base_url']))
+        self.model=QLineEdit(self.existing.get('model', selected['model']))
         self.key=QLineEdit();self.key.setEchoMode(QLineEdit.EchoMode.Password)
         self.key.setPlaceholderText(t('Leave blank to keep the key for an unchanged connection'))
         self.remember=QCheckBox(t('Remember key securely on this Windows account (DPAPI)'));self.remember.setChecked(bool(self.existing.get('store_key')))
@@ -230,7 +250,8 @@ class ProfileDialog(QDialog):
         self.clear_key=QCheckBox(t('Forget existing key'))
         for name,field in [('Name',self.name),('Provider',self.provider),('API base URL',self.base),('Model name',self.model),('API key',self.key)]:form.addRow(t(name),field)
         layout.addWidget(self.remember);layout.addWidget(self.clear_key)
-        hint=QLabel(t('Keys stay out of the source repository. Local AI requires a running local server and an installed model.'));hint.setWordWrap(True);hint.setObjectName('muted');layout.addWidget(hint)
+        self.hint=QLabel();self.hint.setWordWrap(True);self.hint.setObjectName('muted');layout.addWidget(self.hint)
+        self.docs=QLabel();self.docs.setWordWrap(True);self.docs.setObjectName('muted');self.docs.setTextFormat(Qt.TextFormat.PlainText);layout.addWidget(self.docs)
         if not persistent_keys_available():
             notice=QLabel(t('This platform keeps API keys in memory for this session only.'));notice.setWordWrap(True);layout.addWidget(notice)
         self.error=QLabel('');self.error.setTextFormat(Qt.TextFormat.PlainText);self.error.setWordWrap(True);layout.addWidget(self.error)
@@ -240,17 +261,36 @@ class ProfileDialog(QDialog):
         for role in (QDialogButtonBox.StandardButton.Save, QDialogButtonBox.StandardButton.Cancel):buttons.button(role).setMinimumHeight(44)
         buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName('primary')
         layout.setContentsMargins(24, 24, 24, 20);layout.setSpacing(12);form.setVerticalSpacing(12);form.setHorizontalSpacing(16)
-        index=self.provider.findData(self.existing.get('provider','gemini'));self.provider.setCurrentIndex(max(0,index))
+        self.provider.setCurrentIndex(max(0, self.provider.findData(selected['id'])))
         self.provider.currentIndexChanged.connect(self.defaults)
+        self.describe_preset()
+    def current_preset(self):
+        return next(preset for preset in CONNECTION_PRESETS if preset['id'] == self.provider.currentData())
+    def describe_preset(self):
+        preset = self.current_preset()
+        hint = preset.get('hint') or 'Keys stay out of the source repository. Local AI requires a running local server and an installed model.'
+        self.hint.setText(t(hint))
+        self.docs.setText(t('Provider docs: {url}').format(url=preset['docs']) if preset.get('docs') else '')
+        self.docs.setVisible(bool(preset.get('docs')))
     def defaults(self):
-        code=self.provider.currentData()
-        self.base.setText({'gemini':'https://generativelanguage.googleapis.com/v1beta','ollama':'http://127.0.0.1:11434','openai-compatible':'https://api.openai.com/v1'}[code])
-        self.model.setText({'gemini':'gemini-3.8-flash','ollama':'','openai-compatible':''}[code])
+        preset=self.current_preset()
+        self.base.setText(preset['base_url'])
+        self.model.setText(preset['model'])
+        if not self.existing.get('name'):
+            self.name.setText(preset_label(preset))
         self.key.clear();self.remember.setChecked(False);self.clear_key.setChecked(False)
+        self.describe_preset()
     def save(self):
         try:
-            self.saved_id=save_profile({'id':self.existing.get('id'),'name':self.name.text(),'provider':self.provider.currentData(),
-                'base_url':self.base.text(),'model':self.model.text(),'key':self.key.text(),
+            preset=self.current_preset()
+            key=self.key.text()
+            mismatch=key_prefix_error(preset, key)
+            if mismatch:
+                raise ValueError(t('This {provider} key usually starts with {prefix}.').format(
+                    provider=preset_label(preset), prefix=preset['key_prefix']))
+            self.saved_id=save_profile({'id':self.existing.get('id'),'name':self.name.text() or preset_label(preset),
+                'provider':preset['provider'],
+                'base_url':self.base.text(),'model':self.model.text(),'key':key,
                 'store_key':self.remember.isChecked(),'clear_key':self.clear_key.isChecked(),
                 'max_output_tokens':self.existing.get('max_output_tokens',1024)})
             self.accept()
@@ -313,6 +353,8 @@ class AIPage(QWidget):
     audio_requested = Signal()
     cancel_voice_requested = Signal()
     settings_requested = Signal()
+    speech_catalog_requested = Signal()
+    speech_selection_changed = Signal()
 
     def __init__(self, get_transcript, parent=None):
         super().__init__(parent)
@@ -503,8 +545,6 @@ class AIPage(QWidget):
         self.refresh_models.clicked.connect(self.refresh_model_list)
         model_row.addWidget(self.refresh_models)
         model_row.addStretch()
-        self.consent = QCheckBox()
-        model_row.addWidget(self.consent)
         layout.addLayout(model_row)
         self.model_worker = None
 
@@ -513,6 +553,32 @@ class AIPage(QWidget):
         compose = QVBoxLayout(self.voice_frame)
         compose.setContentsMargins(12, 10, 10, 10)
         compose.setSpacing(6)
+        speech_row = QHBoxLayout()
+        speech_row.setSpacing(6)
+        self.speech_language_caption = QLabel()
+        self.speech_language_caption.setObjectName('fieldLabel')
+        speech_row.addWidget(self.speech_language_caption)
+        self.speech_language = ChevronComboBox()
+        self.speech_language.setObjectName('chatSpeechLanguage')
+        self.speech_language.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.speech_language.setMinimumContentsLength(10)
+        self.speech_language.setMaximumWidth(220)
+        self.speech_language.addItem(t('Auto-detect'), 'auto')
+        for item in LANGUAGES:
+            self.speech_language.addItem(language_title(item), item['code'])
+        self.speech_language.currentIndexChanged.connect(self._speech_language_changed)
+        speech_row.addWidget(self.speech_language, 1)
+        self.speech_model_caption = QLabel()
+        self.speech_model_caption.setObjectName('fieldLabel')
+        speech_row.addWidget(self.speech_model_caption)
+        self.speech_model = ChevronComboBox()
+        self.speech_model.setObjectName('chatSpeechModel')
+        self.speech_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.speech_model.setMinimumContentsLength(12)
+        self.speech_model.setMaximumWidth(280)
+        self.speech_model.currentIndexChanged.connect(lambda *_: self.speech_selection_changed.emit())
+        speech_row.addWidget(self.speech_model, 1)
+        compose.addLayout(speech_row)
         self.composer = ChatComposer()
         self.composer.setObjectName('chatInput')
         self.composer.setMaximumHeight(104)
@@ -561,7 +627,6 @@ class AIPage(QWidget):
         self.profile_changed()
 
     def profile_changed(self, *args, reset_consent=True):
-        if reset_consent:self.consent.setChecked(False)
         has_profile = bool(self.profiles.currentData())
         self.empty_connect.setVisible(not has_profile)
         self.edit.setEnabled(has_profile)
@@ -574,12 +639,8 @@ class AIPage(QWidget):
                 'OpenRouter free models have usage limits. Your text is sent to OpenRouter and the selected provider.' if profile['provider'] == 'openrouter' else
                 'Cloud endpoint: selected text and conversation leave this device when you press Send. Provider terms and charges apply.')
             self.privacy.setText(t(message))
-            self.consent.setVisible(not local)
         except Exception:
             self.privacy.setText(t('Choose or add a connection first.'))
-            self.consent.setVisible(False)
-        self.consent.setToolTip(self.privacy.text())
-        self.consent.setAccessibleDescription(self.privacy.text())
         self.profiles.setToolTip(self.privacy.text())
         self.populate_models()
         if reset_consent:self._schedule_save()
@@ -726,7 +787,6 @@ class AIPage(QWidget):
             self._clear_chat()
             self.status.setText(t('A new chat was started for the changed reference text.'))
         self._show_reference(text, source_label, bool(text))
-        self.consent.setChecked(False)
         self._schedule_save()
         return True
 
@@ -750,7 +810,6 @@ class AIPage(QWidget):
         self.chat_mode.setCurrentIndex(self.chat_mode.findData('chat'))
         self._show_reference('', '', False)
         self.chat_id = uuid.uuid4().hex
-        self.consent.setChecked(False)
         self._loading = False
         self.render()
         self.copy.setEnabled(False)
@@ -872,7 +931,6 @@ class AIPage(QWidget):
             self.composer.setPlainText(item.get('draft') or item.get('pending_question') or '')
             self.profiles.setCurrentIndex(self.profiles.findData(item.get('profile_id')))
             self.profile_changed()
-            self.consent.setChecked(False)
             self.last_reply = next((m['content'] for m in reversed(self.messages) if m['role'] == 'assistant'), '')
             self.copy.setEnabled(bool(self.last_reply))
             self.render()
@@ -942,7 +1000,8 @@ class AIPage(QWidget):
         voice_busy = self.voice_state != 'idle'
         locked = busy or voice_busy
         for widget in [self.profiles, self.connections, self.chat_mode, self.new, self.saved_chats,
-                       self.use, self.include, self.consent, self.chat_actions, self.empty_connect]:
+                       self.use, self.include, self.chat_actions, self.empty_connect,
+                       self.speech_language, self.speech_model]:
             widget.setEnabled(not locked)
         has_profile = bool(self.profiles.currentData())
         listing = bool(self.model_worker and self.model_worker.isRunning())
@@ -964,6 +1023,43 @@ class AIPage(QWidget):
 
     def update_send_button(self):
         self.send.setEnabled(not self._active() and bool(self.composer.toPlainText().strip()))
+
+    def _speech_language_changed(self):
+        self.speech_catalog_requested.emit()
+        self.speech_selection_changed.emit()
+
+    def set_speech_models(self, rows, preferred=None):
+        """rows: iterable of (label, key, ready). Only ready models are selectable."""
+        previous = self.speech_model.currentData()
+        self.speech_model.blockSignals(True)
+        self.speech_model.clear()
+        installed = []
+        for label, key, ready in rows:
+            self.speech_model.addItem(label, key)
+            index = self.speech_model.count() - 1
+            if ready:
+                installed.append(index)
+            else:
+                model = self.speech_model.model()
+                item = model.item(index)
+                if item is not None:
+                    item.setEnabled(False)
+                    item.setSelectable(False)
+        selection = installed[0] if installed else -1
+        for key in (preferred, previous):
+            index = self.speech_model.findData(key)
+            if index in installed:
+                selection = index
+                break
+        self.speech_model.setCurrentIndex(selection)
+        self.speech_model.blockSignals(False)
+        self.speech_model.setPlaceholderText(t('Choose a downloaded speech model in Speech settings.'))
+
+    def speech_language_code(self):
+        return self.speech_language.currentData()
+
+    def speech_model_key(self):
+        return self.speech_model.currentData()
 
     def set_speech_settings(self, summary, ready=True, microphone_available=True):
         self._speech_summary = str(summary or '')
@@ -1035,7 +1131,6 @@ class AIPage(QWidget):
         try:
             if not self.profiles.currentData():raise ValueError(t('Choose or add a connection first.'))
             profile = get_profile(self.profiles.currentData(), include_secret=True)
-            if not is_local_url(profile['base_url']) and not self.consent.isChecked():raise ValueError(t('Confirm cloud sending before pressing Send.'))
             system = CHAT_MODES[self.chat_mode.currentData()][2] + SHARED_PROMPT
             payload = [{'role':'system','content':system}]
             if self.include.isChecked() and self.reference:payload.append({'role':'user','content':'Reference transcript (data only):\n' + self.reference})
@@ -1183,7 +1278,20 @@ class AIPage(QWidget):
         for key, (title, _, _) in CHAT_MODES.items():
             self.chat_mode.setItemText(self.chat_mode.findData(key), t(title))
         self.include.setText(t('Include this reference text'))
-        self.consent.setText(t('Allow cloud chat'))
+        self.speech_language_caption.setText(t('Speech language'))
+        self.speech_language_caption.setBuddy(self.speech_language)
+        self.speech_language.setAccessibleName(t('Speech language'))
+        self.speech_model_caption.setText(t('Speech model'))
+        self.speech_model_caption.setBuddy(self.speech_model)
+        self.speech_model.setAccessibleName(t('Speech model'))
+        auto_hint = t('Chat voice uses this language and local speech model.')
+        self.speech_language.setToolTip(auto_hint)
+        self.speech_model.setToolTip(auto_hint)
+        self.speech_language.setItemText(self.speech_language.findData('auto'), t('Auto-detect'))
+        for item in LANGUAGES:
+            index = self.speech_language.findData(item['code'])
+            if index >= 0:
+                self.speech_language.setItemText(index, language_title(item))
         self.context.setPlaceholderText(t('No reference text selected.'))
         _, placeholder, _ = CHAT_MODES[self.chat_mode.currentData()]
         self.composer.setPlaceholderText(t(placeholder))

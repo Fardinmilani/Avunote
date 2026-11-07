@@ -339,6 +339,7 @@ class Studio(QMainWindow):
             self.language.setCurrentIndex(max(0, index))
         self.language_changed()
         self.refresh_library()
+        self.init_chat_speech_pickers()
         self.retranslate_ui()
 
     def brand_pixmap(self, mark_only=False):
@@ -412,6 +413,9 @@ class Studio(QMainWindow):
             self.ai_page.audio_requested.connect(self.choose_chat_audio)
             self.ai_page.settings_requested.connect(lambda: self.show_page(0))
             self.ai_page.cancel_voice_requested.connect(self.cancel)
+        if hasattr(self.ai_page, 'speech_catalog_requested'):
+            self.ai_page.speech_catalog_requested.connect(self.sync_chat_speech_models)
+            self.ai_page.speech_selection_changed.connect(self.save_chat_speech_settings)
         self.pages.addWidget(self.ai_page)
         self.build_settings()
         self.studio_nav.setChecked(True)
@@ -908,6 +912,7 @@ class Studio(QMainWindow):
         self.interface_language.repaint()
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'retranslate_ui'):
             self.ai_page.retranslate_ui()
+            self.sync_chat_speech_models()
         if self.updates is not None:
             self.updates.retranslate_ui()
         self.update()
@@ -1066,6 +1071,11 @@ class Studio(QMainWindow):
         key = self.model.currentData()
         if key and self.model_readiness.get(key):
             payload['model'] = key
+        if getattr(self, '_chat_speech_ready', False) and hasattr(self, 'ai_page') and hasattr(self.ai_page, 'speech_language_code'):
+            payload['chat_speech_language'] = self.ai_page.speech_language_code()
+            chat_model = self.ai_page.speech_model_key()
+            if chat_model and self.model_readiness.get(chat_model):
+                payload['chat_speech_model'] = chat_model
         try:
             atomic_write_text(self.data/'settings.json', json.dumps(payload, ensure_ascii=False, indent=2))
             self.saved_settings = payload
@@ -1341,9 +1351,13 @@ class Studio(QMainWindow):
         self.tally.setAccessibleName(self.status.text())
         self.ai_button.setEnabled(bool(self.raw_text))
         if hasattr(self, 'ai_page') and hasattr(self.ai_page, 'set_speech_settings'):
-            model_text = self.model.currentText() or tr('هیچ مدل نصب‌شده‌ای نیست')
-            summary = ' · '.join(filter(None, [self.language.currentText(), model_text, self.devices.currentText()]))
-            self.ai_page.set_speech_settings(summary, ready=ready and idle,
+            chat_model = self.ai_page.speech_model_key() if hasattr(self.ai_page, 'speech_model_key') else model_key
+            chat_ready = self.model_readiness.get(chat_model, False) if chat_model else False
+            language_text = self.ai_page.speech_language.currentText() if hasattr(self.ai_page, 'speech_language') else self.language.currentText()
+            model_text = self.ai_page.speech_model.currentText() if hasattr(self.ai_page, 'speech_model') else self.model.currentText()
+            model_text = model_text or tr('هیچ مدل نصب‌شده‌ای نیست')
+            summary = ' · '.join(filter(None, [language_text, model_text, self.devices.currentText()]))
+            self.ai_page.set_speech_settings(summary, ready=chat_ready and idle,
                                             microphone_available=self.devices.currentData() is not None)
 
     def record_chat_voice(self):
@@ -1351,10 +1365,63 @@ class Studio(QMainWindow):
             return
         self.toggle_recording(target='ai')
 
+    def init_chat_speech_pickers(self):
+        page = getattr(self, 'ai_page', None)
+        if page is None or not hasattr(page, 'speech_language'):
+            return
+        saved = self.saved_settings.get('chat_speech_language') or self.saved_settings.get('language', 'azb')
+        with QSignalBlocker(page.speech_language):
+            index = page.speech_language.findData(saved)
+            page.speech_language.setCurrentIndex(max(0, index))
+        self._chat_speech_ready = True
+        self.sync_chat_speech_models()
+
+    def sync_chat_speech_models(self):
+        page = getattr(self, 'ai_page', None)
+        if page is None or not hasattr(page, 'set_speech_models'):
+            return
+        language = page.speech_language_code()
+        if language == 'auto':
+            catalog = [item for item in CATALOG if item.get('automatic_language')] or list(CATALOG)
+        else:
+            catalog = models_for_language(language)
+        rows = []
+        for item in catalog:
+            key = item['key']
+            ready = find_local_model(key) is not None
+            self.model_readiness[key] = ready
+            rows.append((f'{tr(item["title"])}  ·  {item["size"]}', key, ready))
+        preferred = page.speech_model_key() or self.saved_settings.get('chat_speech_model') or self.saved_settings.get('model')
+        page.set_speech_models(rows, preferred)
+        automatic = bool(get_model(page.speech_model_key()).get('automatic_language')) if page.speech_model_key() else False
+        hint = tr('Language is detected automatically by this speech model.') if automatic else tr('Chat voice uses this language and local speech model.')
+        page.speech_language.setToolTip(hint)
+        page.speech_model.setToolTip(hint)
+        if hasattr(self, 'status'):
+            self.controls()
+
+    def save_chat_speech_settings(self):
+        self.save_settings()
+
+    def chat_speech_selection(self):
+        language = self.ai_page.speech_language_code()
+        model_key = self.ai_page.speech_model_key()
+        if language == 'auto' and model_key:
+            codes = get_model(model_key).get('languages') or ()
+            preferred = self.language.currentData() or 'en'
+            language = preferred if preferred in codes else (next(iter(codes), 'en'))
+        return language, model_key
+
+    def speech_for_target(self, target):
+        if target == 'ai' and hasattr(self.ai_page, 'speech_model_key'):
+            return self.chat_speech_selection()
+        return self.language.currentData(), self.model.currentData()
+
     def choose_chat_audio(self):
         if self.busy or self.recording:
             return
-        if not self.model_readiness.get(self.model.currentData(), False):
+        _, model_key = self.speech_for_target('ai')
+        if not self.model_readiness.get(model_key, False):
             self.open_selected_library()
             return
         path, _ = QFileDialog.getOpenFileName(self, tr('انتخاب ویس'), '', 'Audio (*.wav *.mp3 *.m4a *.ogg)')
@@ -1384,7 +1451,8 @@ class Studio(QMainWindow):
     def start_transcription(self, audio, target='studio'):
         if self.busy or self.recording:
             return
-        if not self.model.currentData() or find_local_model(self.model.currentData()) is None:
+        speech_language, model_key = self.speech_for_target(target)
+        if not model_key or find_local_model(model_key) is None:
             self.status.setText('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.')
             if target == 'ai':
                 self.ai_page.voice_failed(tr('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.'))
@@ -1398,8 +1466,7 @@ class Studio(QMainWindow):
                 self.error('یک فایل WAV، MP3، M4A یا OGG معتبر انتخاب کنید.')
             return
         self.transcription_target = target
-        self.run_model = self.model.currentData()
-        speech_language = self.language.currentData()
+        self.run_model = model_key
         output = self.data/'results'/f'{audio.stem}-{self.run_model}-{time.strftime("%Y%m%d-%H%M%S")}-{uuid.uuid4().hex[:6]}.txt'
         if target == 'ai':
             self.ai_output = output
@@ -1455,7 +1522,8 @@ class Studio(QMainWindow):
             return
         if self.busy or self.devices.currentData() is None:
             return
-        if not self.model.currentData() or find_local_model(self.model.currentData()) is None:
+        _, model_key = self.speech_for_target(target)
+        if not model_key or find_local_model(model_key) is None:
             if target == 'ai':
                 self.ai_page.voice_failed(tr('ابتدا مدل این زبان را دریافت کنید یا پوشه مدل محلی را معرفی کنید.'))
             self.open_selected_library()
